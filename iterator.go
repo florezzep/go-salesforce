@@ -27,7 +27,7 @@ type bulkJobQueryIterator struct {
 }
 
 func newBulkJobQueryIterator(auth *authentication, bulkJobId string) (*bulkJobQueryIterator, error) {
-	pollErr := waitForJobResults(auth, bulkJobId, queryJobType, (time.Second / 2))
+	pollErr := waitForJobResults(auth, bulkJobId, queryJobType, (time.Second / 2), time.Minute)
 	if pollErr != nil {
 		return nil, pollErr
 	}

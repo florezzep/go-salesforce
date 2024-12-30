@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/forcedotcom/go-soql"
 )
@@ -405,12 +406,12 @@ func (sf *Salesforce) DeleteComposite(sObjectName string, records any, batchSize
 	return doDeleteComposite(sf.auth, sObjectName, records, allOrNone, batchSize)
 }
 
-func (sf *Salesforce) QueryBulkExport(query string, filePath string) error {
+func (sf *Salesforce) QueryBulkExport(query string, filePath string, timeOut time.Duration) error {
 	authErr := validateAuth(*sf)
 	if authErr != nil {
 		return authErr
 	}
-	queryErr := doQueryBulk(sf.auth, filePath, query)
+	queryErr := doQueryBulk(sf.auth, filePath, query, timeOut)
 	if queryErr != nil {
 		return queryErr
 	}
@@ -428,7 +429,7 @@ func (sf *Salesforce) QueryStructBulkExport(soqlStruct any, filePath string) err
 	if err != nil {
 		return err
 	}
-	queryErr := doQueryBulk(sf.auth, filePath, soqlQuery)
+	queryErr := doQueryBulk(sf.auth, filePath, soqlQuery, time.Minute)
 	if queryErr != nil {
 		return queryErr
 	}

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 )
@@ -2896,7 +2897,7 @@ func TestSalesforce_QueryBulkExport(t *testing.T) {
 			sf := &Salesforce{
 				auth: tt.fields.auth,
 			}
-			if err := sf.QueryBulkExport(tt.args.query, tt.args.filePath); (err != nil) != tt.wantErr {
+			if err := sf.QueryBulkExport(tt.args.query, tt.args.filePath, time.Minute); (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.QueryBulkExport() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})

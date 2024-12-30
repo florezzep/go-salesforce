@@ -789,7 +789,7 @@ func Test_waitForJobResults(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := waitForJobResults(tt.args.auth, tt.args.bulkJobId, tt.args.jobType, tt.args.interval)
+			err := waitForJobResults(tt.args.auth, tt.args.bulkJobId, tt.args.jobType, tt.args.interval, time.Minute)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("waitForQueryResults() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1302,7 +1302,7 @@ func Test_doQueryBulk(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := doQueryBulk(tt.args.auth, tt.args.filePath, tt.args.query); (err != nil) != tt.wantErr {
+			if err := doQueryBulk(tt.args.auth, tt.args.filePath, tt.args.query, time.Minute); (err != nil) != tt.wantErr {
 				t.Errorf("doQueryBulk() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})

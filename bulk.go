@@ -194,8 +194,8 @@ func waitForJobResultsAsync(auth *authentication, bulkJobId string, jobType stri
 	c <- err
 }
 
-func waitForJobResults(auth *authentication, bulkJobId string, jobType string, interval time.Duration) error {
-	err := wait.PollUntilContextTimeout(context.Background(), interval, time.Minute, false, func(context.Context) (bool, error) {
+func waitForJobResults(auth *authentication, bulkJobId string, jobType string, interval time.Duration, timeOut time.Duration) error {
+	err := wait.PollUntilContextTimeout(context.Background(), interval, timeOut, false, func(context.Context) (bool, error) {
 		bulkJob, reqErr := getJobResults(auth, jobType, bulkJobId)
 		if reqErr != nil {
 			return true, reqErr
@@ -484,7 +484,7 @@ func doBulkJobWithFile(auth *authentication, sObjectName string, fieldName strin
 	return jobIds, jobErrors
 }
 
-func doQueryBulk(auth *authentication, filePath string, query string) error {
+func doQueryBulk(auth *authentication, filePath string, query string, timeout time.Duration) error {
 	queryJobReq := bulkQueryJobCreationRequest{
 		Operation: queryJobType,
 		Query:     query,
@@ -503,7 +503,7 @@ func doQueryBulk(auth *authentication, filePath string, query string) error {
 		return newErr
 	}
 
-	pollErr := waitForJobResults(auth, job.Id, queryJobType, (time.Second / 2))
+	pollErr := waitForJobResults(auth, job.Id, queryJobType, (time.Second / 2), timeout)
 	if pollErr != nil {
 		return pollErr
 	}
