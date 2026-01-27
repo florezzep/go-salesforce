@@ -36,11 +36,12 @@ type SalesforceResults struct {
 }
 
 type requestPayload struct {
-	method  string
-	uri     string
-	content string
-	body    string
-	retry   bool
+	method       string
+	uri          string
+	content      string
+	body         string
+	retry        bool
+	endpointBase string
 }
 
 const (
@@ -56,7 +57,7 @@ func doRequest(auth *authentication, payload requestPayload) (*http.Response, er
 	var reader *strings.Reader
 	var req *http.Request
 	var err error
-	endpoint := auth.InstanceUrl + "/services/data/" + apiVersion + payload.uri
+	endpoint := auth.InstanceUrl + payload.endpointBase + payload.uri
 
 	if payload.body != "" {
 		reader = strings.NewReader(payload.body)
@@ -189,7 +190,7 @@ func processSalesforceError(resp http.Response, auth *authentication, payload re
 			if err != nil {
 				return &resp, err
 			}
-			newResp, err := doRequest(auth, requestPayload{payload.method, payload.uri, payload.content, payload.body, true})
+			newResp, err := doRequest(auth, requestPayload{payload.method, payload.uri, payload.content, payload.body, true, payload.endpointBase})
 			if err != nil {
 				return &resp, err
 			}
@@ -254,10 +255,31 @@ func (sf *Salesforce) DoRequest(method string, uri string, body []byte) (*http.R
 	}
 
 	resp, err := doRequest(sf.auth, requestPayload{
-		method:  method,
-		uri:     uri,
-		content: jsonType,
-		body:    string(body),
+		method:       method,
+		uri:          uri,
+		content:      jsonType,
+		body:         string(body),
+		endpointBase: "/services/data/" + apiVersion,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+func (sf *Salesforce) DoApexRequest(method string, uri string, body []byte) (*http.Response, error) {
+	authErr := validateAuth(*sf)
+	if authErr != nil {
+		return nil, authErr
+	}
+
+	resp, err := doRequest(sf.auth, requestPayload{
+		method:       method,
+		uri:          uri,
+		content:      jsonType,
+		body:         string(body),
+		endpointBase: "/services/apexrest",
 	})
 	if err != nil {
 		return nil, err
