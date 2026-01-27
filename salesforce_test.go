@@ -18,7 +18,7 @@ import (
 func setupTestServer(body any, status int) (*httptest.Server, authentication) {
 	respBody, _ := json.Marshal(body)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.RequestURI[len(r.RequestURI)-8:] == "/batches" {
+		if len(r.RequestURI) >= 8 && r.RequestURI[len(r.RequestURI)-8:] == "/batches" {
 			w.WriteHeader(http.StatusCreated)
 		} else {
 			w.WriteHeader(status)
@@ -800,6 +800,93 @@ func TestSalesforce_DoRequest(t *testing.T) {
 				}
 			} else if !tt.wantErr {
 				t.Error("Salesforce.DoRequest() did not return a response")
+			}
+		})
+	}
+}
+
+func TestSalesforce_DoApexRequest(t *testing.T) {
+	server, sfAuth := setupTestServer("response_body", http.StatusOK)
+	defer server.Close()
+
+	type fields struct {
+		auth *authentication
+	}
+	type args struct {
+		method string
+		uri    string
+		body   []byte
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    *http.Response
+		wantErr bool
+	}{
+		{
+			name: "successful_apex_request",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				method: http.MethodPost,
+				uri:    "/messaging/v0/airbnb",
+				body:   []byte(`{"test": "data"}`),
+			},
+			want: &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("\"response_body\"")),
+			},
+			wantErr: false,
+		},
+		{
+			name: "validation_fail_auth",
+			fields: fields{
+				auth: nil,
+			},
+			args: args{
+				method: http.MethodPost,
+				uri:    "/messaging/v0/airbnb",
+				body:   []byte(`{"test": "data"}`),
+			},
+			wantErr: true,
+		},
+		{
+			name: "successful_get_apex_request",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				method: http.MethodGet,
+				uri:    "/custom/endpoint",
+				body:   nil,
+			},
+			want: &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("\"response_body\"")),
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sf := &Salesforce{
+				auth: tt.fields.auth,
+			}
+			got, err := sf.DoApexRequest(tt.args.method, tt.args.uri, tt.args.body)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Salesforce.DoApexRequest() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != nil {
+				gotBody, _ := io.ReadAll(got.Body)
+				wantBody, _ := io.ReadAll(tt.want.Body)
+				if got.StatusCode != tt.want.StatusCode || string(gotBody) != string(wantBody) {
+					t.Errorf("Salesforce.DoApexRequest() = %v %v, want %v %v", got.StatusCode, string(gotBody), tt.want.StatusCode, string(wantBody))
+				}
+			} else if !tt.wantErr {
+				t.Error("Salesforce.DoApexRequest() did not return a response")
 			}
 		})
 	}
