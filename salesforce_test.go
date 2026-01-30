@@ -397,6 +397,24 @@ func Test_processSalesforceError(t *testing.T) {
 			want:    400,
 			wantErr: true,
 		},
+		{
+			name: "process_single_error_object_apex_rest_format",
+			args: args{
+				resp: http.Response{
+					Status:     "400",
+					StatusCode: 400,
+					Body: io.NopCloser(strings.NewReader(`{
+						"message": "Apex REST error",
+						"statusCode": "400",
+						"errorCode": "BAD_REQUEST"
+					}`)),
+				},
+				auth:    &badSfAuth,
+				payload: reqPayload,
+			},
+			want:    400,
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

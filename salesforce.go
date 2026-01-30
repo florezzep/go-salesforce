@@ -182,7 +182,14 @@ func processSalesforceError(resp http.Response, auth *authentication, payload re
 	var sfErrors []SalesforceErrorMessage
 	err = json.Unmarshal(responseData, &sfErrors)
 	if err != nil {
-		return &resp, err
+		// Apex REST endpoints may return a single error object instead of an array
+		var singleError SalesforceErrorMessage
+		if singleErr := json.Unmarshal(responseData, &singleError); singleErr == nil {
+			sfErrors = []SalesforceErrorMessage{singleError}
+		} else {
+			// If we can't parse as either format, return the raw error
+			return &resp, errors.New(string(responseData))
+		}
 	}
 	for _, sfError := range sfErrors {
 		if sfError.ErrorCode == invalidSessionIdError && !payload.retry { // only attempt to refresh the session once
