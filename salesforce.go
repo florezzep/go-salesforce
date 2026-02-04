@@ -57,6 +57,9 @@ func doRequest(auth *authentication, payload requestPayload) (*http.Response, er
 	var reader *strings.Reader
 	var req *http.Request
 	var err error
+	if payload.endpointBase == "" {
+		payload.endpointBase = "/services/data/" + apiVersion
+	}
 	endpoint := auth.InstanceUrl + payload.endpointBase + payload.uri
 
 	if payload.body != "" {
@@ -262,11 +265,10 @@ func (sf *Salesforce) DoRequest(method string, uri string, body []byte) (*http.R
 	}
 
 	resp, err := doRequest(sf.auth, requestPayload{
-		method:       method,
-		uri:          uri,
-		content:      jsonType,
-		body:         string(body),
-		endpointBase: "/services/data/" + apiVersion,
+		method:  method,
+		uri:     uri,
+		content: jsonType,
+		body:    string(body),
 	})
 	if err != nil {
 		return nil, err
