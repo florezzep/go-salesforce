@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/k-capehart/go-salesforce/v3"
+	"github.com/florezzep/go-salesforce"
 )
 
 func main() {
