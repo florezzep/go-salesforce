@@ -21,13 +21,14 @@ func WithHeader(key, value string) RequestOption {
 }
 
 type requestPayload struct {
-	method   string
-	uri      string
-	content  string
-	body     string
-	retry    bool
-	compress bool
-	options  []RequestOption
+	method       string
+	uri          string
+	content      string
+	body         string
+	retry        bool
+	compress     bool
+	options      []RequestOption
+	endpointBase string
 }
 
 func doRequest(
@@ -38,7 +39,11 @@ func doRequest(
 	var reader io.Reader
 	var req *http.Request
 	var err error
-	endpoint := auth.InstanceUrl + "/services/data/" + config.apiVersion + payload.uri
+	base := "/services/data/" + config.apiVersion
+	if payload.endpointBase != "" {
+		base = payload.endpointBase
+	}
+	endpoint := auth.InstanceUrl + base + payload.uri
 
 	if payload.body != "" {
 		if payload.compress {
@@ -132,7 +137,12 @@ func processSalesforceError(
 	var sfErrors []SalesforceErrorMessage
 	err = json.Unmarshal(responseData, &sfErrors)
 	if err != nil {
-		return &resp, err
+		var singleError SalesforceErrorMessage
+		if singleErr := json.Unmarshal(responseData, &singleError); singleErr == nil {
+			sfErrors = []SalesforceErrorMessage{singleError}
+		} else {
+			return &resp, errors.New(string(responseData))
+		}
 	}
 	for _, sfError := range sfErrors {
 		if sfError.ErrorCode == invalidSessionIdError &&
@@ -146,13 +156,14 @@ func processSalesforceError(
 				auth,
 				config,
 				requestPayload{
-					payload.method,
-					payload.uri,
-					payload.content,
-					payload.body,
-					true,
-					payload.compress,
-					payload.options,
+					method:       payload.method,
+					uri:          payload.uri,
+					content:      payload.content,
+					body:         payload.body,
+					retry:        true,
+					compress:     payload.compress,
+					options:      payload.options,
+					endpointBase: payload.endpointBase,
 				},
 			)
 			if err != nil {

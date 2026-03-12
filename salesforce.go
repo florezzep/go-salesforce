@@ -264,6 +264,33 @@ func (sf *Salesforce) DoRequest(
 	return resp, nil
 }
 
+func (sf *Salesforce) DoApexRequest(
+	method string,
+	uri string,
+	body []byte,
+	opts ...RequestOption,
+) (*http.Response, error) {
+	authErr := validateAuth(*sf)
+	if authErr != nil {
+		return nil, authErr
+	}
+
+	resp, err := doRequest(sf.auth, sf.config, requestPayload{
+		method:       method,
+		uri:          uri,
+		content:      jsonType,
+		body:         string(body),
+		options:      opts,
+		compress:     sf.config.compressionHeaders,
+		endpointBase: "/services/apexrest",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 func (sf *Salesforce) Query(query string, sObject any) error {
 	authErr := validateAuth(*sf)
 	if authErr != nil {
