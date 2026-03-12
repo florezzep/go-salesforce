@@ -1,16 +1,16 @@
 package salesforce
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/afero"
 )
@@ -18,7 +18,19 @@ import (
 func setupTestServer(body any, status int) (*httptest.Server, authentication) {
 	respBody, _ := json.Marshal(body)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(r.RequestURI) >= 8 && r.RequestURI[len(r.RequestURI)-8:] == "/batches" {
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			w.Header().Set("Content-Encoding", "gzip")
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			if _, err := gz.Write(respBody); err != nil {
+				panic(err)
+			}
+			if err := gz.Close(); err != nil {
+				panic(err)
+			}
+			respBody = buf.Bytes()
+		}
+		if r.RequestURI[len(r.RequestURI)-8:] == "/batches" {
 			w.WriteHeader(http.StatusCreated)
 		} else {
 			w.WriteHeader(status)
@@ -37,81 +49,28 @@ func setupTestServer(body any, status int) (*httptest.Server, authentication) {
 	return server, sfAuth
 }
 
-func Test_doRequest(t *testing.T) {
-	server, sfAuth := setupTestServer("", http.StatusOK)
-	defer server.Close()
+func setupTestServerWithCapture(
+	body any,
+	status int,
+) (*httptest.Server, authentication, **http.Request) {
+	var capturedRequest *http.Request
+	server, auth := setupTestServer(body, status)
+	handler := server.Config.Handler
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedRequest = r
+		handler.ServeHTTP(w, r)
+	})
+	return server, auth, &capturedRequest
+}
 
-	badServer, badSfAuth := setupTestServer("", http.StatusBadRequest)
-	defer badServer.Close()
-
-	recordArrayResp := [2]string{"testRecord1", "testRecord2"}
-	serverWith300Resp, authWith300Resp := setupTestServer(recordArrayResp, http.StatusMultipleChoices)
-	defer serverWith300Resp.Close()
-
-	type args struct {
-		auth    *authentication
-		payload requestPayload
-	}
-	tests := []struct {
-		name    string
-		args    args
-		want    int
-		wantErr bool
-	}{
-		{
-			name: "make_generic_http_call_ok",
-			args: args{
-				auth: &sfAuth,
-				payload: requestPayload{
-					method:  http.MethodGet,
-					uri:     "",
-					content: jsonType,
-					body:    "",
-				},
-			},
-			want:    http.StatusOK,
-			wantErr: false,
-		},
-		{
-			name: "make_generic_http_call_bad_request",
-			args: args{
-				auth: &badSfAuth,
-				payload: requestPayload{
-					method:  http.MethodGet,
-					uri:     "",
-					content: jsonType,
-					body:    "",
-				},
-			},
-			want:    http.StatusBadRequest,
-			wantErr: true,
-		},
-		{
-			name: "handle_multiple_records_with_same_externalId_statusCode_300",
-			args: args{
-				auth: &authWith300Resp,
-				payload: requestPayload{
-					method:  http.MethodGet,
-					uri:     "/sobjects/Contact/ContactExternalId__c/Avng1",
-					content: jsonType,
-					body:    "",
-				},
-			},
-			want:    http.StatusMultipleChoices,
-			wantErr: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := doRequest(tt.args.auth, tt.args.payload)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("doRequest() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got.StatusCode, tt.want) {
-				t.Errorf("doRequest() = %v, want %v", got.StatusCode, tt.want)
-			}
-		})
+func buildSalesforceStruct(auth *authentication) *Salesforce {
+	config := &configuration{}
+	config.setDefaults()
+	config.configureHttpClient()
+	return &Salesforce{
+		auth:     auth,
+		config:   config,
+		AuthFlow: AuthFlowAccessToken,
 	}
 }
 
@@ -275,161 +234,6 @@ func Test_validateBatchSizeWithinRange(t *testing.T) {
 	}
 }
 
-func Test_processSalesforceError(t *testing.T) {
-	body, _ := json.Marshal([]SalesforceErrorMessage{{
-		Message:    "error message",
-		StatusCode: strconv.Itoa(http.StatusInternalServerError),
-		Fields:     []string{},
-		ErrorCode:  strconv.Itoa(http.StatusInternalServerError),
-	}})
-	exampleResp := http.Response{
-		Status:     "500",
-		StatusCode: 500,
-		Body:       io.NopCloser(strings.NewReader(string(body))),
-	}
-
-	badServer, badSfAuth := setupTestServer(body, http.StatusInternalServerError)
-	defer badServer.Close()
-
-	bodyInvalidSession, _ := json.Marshal([]SalesforceErrorMessage{{
-		Message:    "error message",
-		StatusCode: strconv.Itoa(http.StatusInternalServerError),
-		Fields:     []string{},
-		ErrorCode:  invalidSessionIdError,
-	}})
-	reqPayload := requestPayload{
-		method:  http.MethodGet,
-		uri:     "",
-		content: jsonType,
-		body:    "",
-	}
-
-	serverRefreshed, sfAuthRefreshed := setupTestServer("", http.StatusOK)
-	defer serverRefreshed.Close()
-	serverInvalidSession, sfAuthInvalidSession := setupTestServer(sfAuthRefreshed, http.StatusOK)
-	defer serverInvalidSession.Close()
-	sfAuthInvalidSession.grantType = grantTypeClientCredentials
-
-	serverRefreshFail, sfAuthRefreshFail := setupTestServer("", http.StatusBadRequest)
-	defer serverRefreshFail.Close()
-	sfAuthRefreshFail.grantType = grantTypeClientCredentials
-
-	serverRetryFail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.RequestURI, "/oauth2/token") {
-			body, err := json.Marshal(badSfAuth)
-			if err != nil {
-				panic(err)
-			}
-			if _, err := w.Write(body); err != nil {
-				panic(err)
-			}
-		} else {
-			w.WriteHeader(http.StatusBadRequest)
-		}
-	}))
-	defer serverRetryFail.Close()
-	sfAuthRetryFail := authentication{
-		InstanceUrl: serverRetryFail.URL,
-		AccessToken: "1234",
-		grantType:   grantTypeClientCredentials,
-	}
-
-	type args struct {
-		resp    http.Response
-		auth    *authentication
-		payload requestPayload
-	}
-	tests := []struct {
-		name    string
-		args    args
-		want    int
-		wantErr bool
-	}{
-		{
-			name: "process_500_error",
-			args: args{
-				resp:    exampleResp,
-				auth:    &badSfAuth,
-				payload: reqPayload,
-			},
-			want:    exampleResp.StatusCode,
-			wantErr: true,
-		},
-		{
-			name: "process_invalid_session",
-			args: args{
-				resp: http.Response{
-					Status:     "400",
-					StatusCode: 400,
-					Body:       io.NopCloser(strings.NewReader(string(bodyInvalidSession))),
-				},
-				auth:    &sfAuthInvalidSession,
-				payload: reqPayload,
-			},
-			want:    http.StatusOK,
-			wantErr: false,
-		},
-		{
-			name: "fail_to_refresh",
-			args: args{
-				resp: http.Response{
-					Status:     "400",
-					StatusCode: 400,
-					Body:       io.NopCloser(strings.NewReader(string(bodyInvalidSession))),
-				},
-				auth:    &sfAuthRefreshFail,
-				payload: reqPayload,
-			},
-			want:    400,
-			wantErr: true,
-		},
-		{
-			name: "fail_to_retry_request",
-			args: args{
-				resp: http.Response{
-					Status:     "400",
-					StatusCode: 400,
-					Body:       io.NopCloser(strings.NewReader(string(bodyInvalidSession))),
-				},
-				auth:    &sfAuthRetryFail,
-				payload: reqPayload,
-			},
-			want:    400,
-			wantErr: true,
-		},
-		{
-			name: "process_single_error_object_apex_rest_format",
-			args: args{
-				resp: http.Response{
-					Status:     "400",
-					StatusCode: 400,
-					Body: io.NopCloser(strings.NewReader(`{
-						"message": "Apex REST error",
-						"statusCode": "400",
-						"errorCode": "BAD_REQUEST"
-					}`)),
-				},
-				auth:    &badSfAuth,
-				payload: reqPayload,
-			},
-			want:    400,
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := processSalesforceError(tt.args.resp, tt.args.auth, tt.args.payload)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("processSalesforceError() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got.StatusCode, tt.want) {
-				t.Errorf("processSalesforceError() = %v, want %v", got.StatusCode, tt.want)
-			}
-		})
-	}
-}
-
 func TestInit(t *testing.T) {
 	sfAuthUsernamePassword := authentication{
 		AccessToken: "1234",
@@ -521,13 +325,13 @@ func TestInit(t *testing.T) {
 		{
 			name:    "authentication_username_password",
 			args:    args{creds: sfAuthUsernamePassword.creds},
-			want:    &Salesforce{auth: &sfAuthUsernamePassword},
+			want:    buildSalesforceStruct(&sfAuthUsernamePassword),
 			wantErr: false,
 		},
 		{
 			name:    "authentication_client_credentials",
 			args:    args{creds: credsClientCredentials},
-			want:    &Salesforce{auth: &sfAuthClientCredentials},
+			want:    buildSalesforceStruct(&sfAuthClientCredentials),
 			wantErr: false,
 		},
 		{
@@ -548,8 +352,11 @@ func TestInit(t *testing.T) {
 				t.Errorf("Init() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if tt.want != nil && !tt.wantErr && !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("Init() = %v, want %v", *got.auth, *tt.want.auth)
+			if tt.want != nil && !tt.wantErr {
+				// Compare only the authentication parts since the config and AuthFlow are now different
+				if !reflect.DeepEqual(*got.auth, *tt.want.auth) {
+					t.Errorf("Init() = %v, want %v", *got.auth, *tt.want.auth)
+				}
 			}
 		})
 	}
@@ -621,9 +428,10 @@ func Test_validateCollections(t *testing.T) {
 		{
 			name: "validation_success",
 			args: args{
-				sf: Salesforce{auth: &authentication{
+				sf: *buildSalesforceStruct(&authentication{
 					AccessToken: "1234",
-				}},
+				},
+				),
 				records:   []account{},
 				batchSize: 200,
 			},
@@ -641,9 +449,12 @@ func Test_validateCollections(t *testing.T) {
 		{
 			name: "validation_fail_type",
 			args: args{
-				sf: Salesforce{auth: &authentication{
-					AccessToken: "1234",
-				}},
+				sf: Salesforce{
+					auth: &authentication{
+						AccessToken: "1234",
+					},
+					config: getDefaultConfig(t),
+				},
 				records:   0,
 				batchSize: 200,
 			},
@@ -652,9 +463,12 @@ func Test_validateCollections(t *testing.T) {
 		{
 			name: "validation_fail_batch_size",
 			args: args{
-				sf: Salesforce{auth: &authentication{
-					AccessToken: "1234",
-				}},
+				sf: Salesforce{
+					auth: &authentication{
+						AccessToken: "1234",
+					},
+					config: getDefaultConfig(t),
+				},
 				records:   []account{},
 				batchSize: 0,
 			},
@@ -674,10 +488,12 @@ func Test_validateBulk(t *testing.T) {
 	type account struct{}
 
 	type args struct {
-		sf        Salesforce
-		records   any
-		batchSize int
-		isFile    bool
+		sf               Salesforce
+		records          any
+		batchSize        int
+		isFile           bool
+		sObjectName      string
+		assignmentRuleId string
 	}
 	tests := []struct {
 		name    string
@@ -687,65 +503,111 @@ func Test_validateBulk(t *testing.T) {
 		{
 			name: "validation_success",
 			args: args{
-				sf: Salesforce{auth: &authentication{
+				sf: *buildSalesforceStruct(&authentication{
 					AccessToken: "1234",
-				}},
-				records:   []account{},
-				batchSize: 10000,
-				isFile:    false,
+				}),
+				records:          []account{},
+				batchSize:        10000,
+				isFile:           false,
+				sObjectName:      "Lead",
+				assignmentRuleId: "",
 			},
 			wantErr: false,
 		},
 		{
 			name: "validation_fail_auth",
 			args: args{
-				sf:        Salesforce{},
-				records:   []account{},
-				batchSize: 10000,
-				isFile:    false,
+				sf:               Salesforce{},
+				records:          []account{},
+				batchSize:        10000,
+				isFile:           false,
+				sObjectName:      "Lead",
+				assignmentRuleId: "",
 			},
 			wantErr: true,
 		},
 		{
 			name: "validation_fail_type",
 			args: args{
-				sf: Salesforce{auth: &authentication{
-					AccessToken: "1234",
-				}},
-				records:   0,
-				batchSize: 10000,
-				isFile:    false,
+				sf: Salesforce{
+					auth: &authentication{
+						AccessToken: "1234",
+					},
+					config: getDefaultConfig(t),
+				},
+				records:          0,
+				batchSize:        10000,
+				isFile:           false,
+				sObjectName:      "Lead",
+				assignmentRuleId: "",
 			},
 			wantErr: true,
 		},
 		{
 			name: "validation_fail_batch_size",
 			args: args{
-				sf: Salesforce{auth: &authentication{
-					AccessToken: "1234",
-				}},
-				records:   []account{},
-				batchSize: 0,
-				isFile:    false,
+				sf: Salesforce{
+					auth: &authentication{
+						AccessToken: "1234",
+					},
+					config: getDefaultConfig(t),
+				},
+				records:          []account{},
+				batchSize:        0,
+				isFile:           false,
+				sObjectName:      "Lead",
+				assignmentRuleId: "",
 			},
 			wantErr: true,
 		},
 		{
 			name: "validation_success_file",
 			args: args{
-				sf: Salesforce{auth: &authentication{
+				sf: *buildSalesforceStruct(&authentication{
 					AccessToken: "1234",
-				}},
-				records:   nil,
-				batchSize: 2000,
-				isFile:    true,
+				}),
+				records:          nil,
+				batchSize:        2000,
+				isFile:           true,
+				sObjectName:      "Lead",
+				assignmentRuleId: "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "validation_fail_assignment_contact",
+			args: args{
+				sf: *buildSalesforceStruct(&authentication{
+					AccessToken: "1234",
+				}),
+				records:          nil,
+				batchSize:        2000,
+				isFile:           true,
+				sObjectName:      "Contact",
+				assignmentRuleId: "fakeAssignmentRuleId",
+			},
+			wantErr: true,
+		},
+		{
+			name: "validation_success_assignment_case",
+			args: args{
+				sf: *buildSalesforceStruct(&authentication{
+					AccessToken: "1234",
+				},
+				),
+
+				records:          nil,
+				batchSize:        2000,
+				isFile:           true,
+				sObjectName:      "Case",
+				assignmentRuleId: "fakeAssignmentRuleId",
 			},
 			wantErr: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateBulk(tt.args.sf, tt.args.records, tt.args.batchSize, tt.args.isFile); (err != nil) != tt.wantErr {
+			if err := validateBulk(tt.args.sf, tt.args.records, tt.args.batchSize, tt.args.isFile, tt.args.sObjectName, tt.args.assignmentRuleId); (err != nil) != tt.wantErr {
 				t.Errorf("validateBulk() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -753,22 +615,23 @@ func Test_validateBulk(t *testing.T) {
 }
 
 func TestSalesforce_DoRequest(t *testing.T) {
-	server, sfAuth := setupTestServer("response_body", http.StatusOK)
+	server, sfAuth, capturedRequest := setupTestServerWithCapture("response_body", http.StatusOK)
 	defer server.Close()
 
 	type fields struct {
 		auth *authentication
 	}
 	type args struct {
-		method string
-		uri    string
-		body   []byte
+		method  string
+		uri     string
+		body    []byte
+		options []RequestOption
 	}
 	tests := []struct {
 		name    string
 		fields  fields
 		args    args
-		want    *http.Response
+		want    any
 		wantErr bool
 	}{
 		{
@@ -788,6 +651,24 @@ func TestSalesforce_DoRequest(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "request_with_header",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				method: http.MethodGet,
+				uri:    "/request",
+				body:   []byte("example"),
+				options: []RequestOption{
+					WithHeader("If-Modified-Since", "Wed, 21 Oct 2015 07:28:00 GMT"),
+				},
+			},
+			want: http.Header{
+				"If-Modified-Since": []string{"Wed, 21 Oct 2015 07:28:00 GMT"},
+			},
+			wantErr: false,
+		},
+		{
 			name: "validation_fail_auth",
 			fields: fields{
 				auth: nil,
@@ -802,109 +683,38 @@ func TestSalesforce_DoRequest(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.DoRequest(tt.args.method, tt.args.uri, tt.args.body)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.DoRequest(tt.args.method, tt.args.uri, tt.args.body, tt.args.options...)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.DoRequest() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if got != nil {
-				gotBody, _ := io.ReadAll(got.Body)
-				wantBody, _ := io.ReadAll(tt.want.Body)
-				if got.StatusCode != tt.want.StatusCode || string(gotBody) != string(wantBody) {
-					t.Errorf("Salesforce.DoRequest() = %v %v, want %v %v", got.StatusCode, string(gotBody), tt.want.StatusCode, string(wantBody))
+			switch expected := tt.want.(type) {
+			case *http.Response:
+				if got != nil {
+					gotBody, _ := io.ReadAll(got.Body)
+					wantBody, _ := io.ReadAll(expected.Body)
+					if got.StatusCode != expected.StatusCode || string(gotBody) != string(wantBody) {
+						t.Errorf("Salesforce.DoRequest() = %v %v, want %v %v", got.StatusCode, string(gotBody), expected.StatusCode, string(wantBody))
+					}
+				} else if !tt.wantErr {
+					t.Error("Salesforce.DoRequest() did not return a response")
 				}
-			} else if !tt.wantErr {
-				t.Error("Salesforce.DoRequest() did not return a response")
-			}
-		})
-	}
-}
-
-func TestSalesforce_DoApexRequest(t *testing.T) {
-	server, sfAuth := setupTestServer("response_body", http.StatusOK)
-	defer server.Close()
-
-	type fields struct {
-		auth *authentication
-	}
-	type args struct {
-		method string
-		uri    string
-		body   []byte
-	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		want    *http.Response
-		wantErr bool
-	}{
-		{
-			name: "successful_apex_request",
-			fields: fields{
-				auth: &sfAuth,
-			},
-			args: args{
-				method: http.MethodPost,
-				uri:    "/messaging/v0/airbnb",
-				body:   []byte(`{"test": "data"}`),
-			},
-			want: &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader("\"response_body\"")),
-			},
-			wantErr: false,
-		},
-		{
-			name: "validation_fail_auth",
-			fields: fields{
-				auth: nil,
-			},
-			args: args{
-				method: http.MethodPost,
-				uri:    "/messaging/v0/airbnb",
-				body:   []byte(`{"test": "data"}`),
-			},
-			wantErr: true,
-		},
-		{
-			name: "successful_get_apex_request",
-			fields: fields{
-				auth: &sfAuth,
-			},
-			args: args{
-				method: http.MethodGet,
-				uri:    "/custom/endpoint",
-				body:   nil,
-			},
-			want: &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader("\"response_body\"")),
-			},
-			wantErr: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.DoApexRequest(tt.args.method, tt.args.uri, tt.args.body)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Salesforce.DoApexRequest() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != nil {
-				gotBody, _ := io.ReadAll(got.Body)
-				wantBody, _ := io.ReadAll(tt.want.Body)
-				if got.StatusCode != tt.want.StatusCode || string(gotBody) != string(wantBody) {
-					t.Errorf("Salesforce.DoApexRequest() = %v %v, want %v %v", got.StatusCode, string(gotBody), tt.want.StatusCode, string(wantBody))
+			case http.Header:
+				if *capturedRequest != nil {
+					for key, expectedValues := range expected {
+						actualValues := (*capturedRequest).Header[key]
+						if !reflect.DeepEqual(actualValues, expectedValues) {
+							t.Errorf("DoRequest() Header[%s] = %v, want %v", key, actualValues, expectedValues)
+						}
+					}
+				} else if !tt.wantErr {
+					t.Error("No request was captured for header validation")
 				}
-			} else if !tt.wantErr {
-				t.Error("Salesforce.DoApexRequest() did not return a response")
+			case nil:
+				// No validation needed
+			default:
+				t.Errorf("Unsupported want type: %T", expected)
 			}
 		})
 	}
@@ -970,9 +780,7 @@ func TestSalesforce_Query(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			if err := sf.Query(tt.args.query, tt.args.sObject); (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.Query() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1043,9 +851,7 @@ func TestSalesforce_QueryStruct(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			if err := sf.QueryStruct(tt.args.soqlStruct, tt.args.sObject); (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.QueryStruct() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1113,9 +919,7 @@ func TestSalesforce_InsertOne(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			got, err := sf.InsertOne(tt.args.sObjectName, tt.args.record)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.InsertOne() error = %v, wantErr %v", err, tt.wantErr)
@@ -1189,9 +993,7 @@ func TestSalesforce_UpdateOne(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			if err := sf.UpdateOne(tt.args.sObjectName, tt.args.record); (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpdateOne() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1203,6 +1005,21 @@ func TestSalesforce_UpsertOne(t *testing.T) {
 	type account struct {
 		ExternalId__c string
 		Name          string
+	}
+
+	type accountWithIntId struct {
+		NumberExternalId__c int
+		Name                string
+	}
+
+	type accountWithFloatId struct {
+		NumberExternalId__c float64
+		Name                string
+	}
+
+	type accountWithInt64Id struct {
+		NumberExternalId__c int64
+		Name                string
 	}
 
 	successfulResult := SalesforceResult{
@@ -1246,6 +1063,54 @@ func TestSalesforce_UpsertOne(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "successful_upsert_with_int",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Account",
+				externalIdFieldName: "NumberExternalId__c",
+				record: accountWithIntId{
+					NumberExternalId__c: 1234,
+					Name:                "test account",
+				},
+			},
+			want:    successfulResult,
+			wantErr: false,
+		},
+		{
+			name: "successful_upsert_with_float",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Account",
+				externalIdFieldName: "NumberExternalId__c",
+				record: accountWithFloatId{
+					NumberExternalId__c: 1234.1,
+					Name:                "test account",
+				},
+			},
+			want:    successfulResult,
+			wantErr: false,
+		},
+		{
+			name: "successful_upsert_with_int64",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Account",
+				externalIdFieldName: "NumberExternalId__c",
+				record: accountWithInt64Id{
+					NumberExternalId__c: 1234,
+					Name:                "test account",
+				},
+			},
+			want:    successfulResult,
+			wantErr: false,
+		},
+		{
 			name: "validation_fail",
 			fields: fields{
 				auth: &sfAuth,
@@ -1273,13 +1138,60 @@ func TestSalesforce_UpsertOne(t *testing.T) {
 			want:    SalesforceResult{},
 			wantErr: true,
 		},
+		{
+			name: "fail_no_external_id_with_int",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Account",
+				externalIdFieldName: "NumberExternalId__c",
+				record: accountWithIntId{
+					Name: "test account",
+				},
+			},
+			want:    SalesforceResult{},
+			wantErr: true,
+		},
+		{
+			name: "fail_no_external_id_with_float",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Account",
+				externalIdFieldName: "NumberExternalId__c",
+				record: accountWithFloatId{
+					Name: "test account",
+				},
+			},
+			want:    SalesforceResult{},
+			wantErr: true,
+		},
+		{
+			name: "fail_no_external_id_with_int64",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Account",
+				externalIdFieldName: "NumberExternalId__c",
+				record: accountWithInt64Id{
+					Name: "test account",
+				},
+			},
+			want:    SalesforceResult{},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.UpsertOne(tt.args.sObjectName, tt.args.externalIdFieldName, tt.args.record)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpsertOne(
+				tt.args.sObjectName,
+				tt.args.externalIdFieldName,
+				tt.args.record,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpsertOne() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1348,9 +1260,7 @@ func TestSalesforce_DeleteOne(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			if err := sf.DeleteOne(tt.args.sObjectName, tt.args.record); (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.DeleteOne() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1448,9 +1358,7 @@ func TestSalesforce_InsertCollection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			got, err := sf.InsertCollection(tt.args.sObjectName, tt.args.records, tt.args.batchSize)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.InsertCollection() error = %v, wantErr %v", err, tt.wantErr)
@@ -1553,9 +1461,7 @@ func TestSalesforce_UpdateCollection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			got, err := sf.UpdateCollection(tt.args.sObjectName, tt.args.records, tt.args.batchSize)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpdateCollection() error = %v, wantErr %v", err, tt.wantErr)
@@ -1662,10 +1568,13 @@ func TestSalesforce_UpsertCollection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.UpsertCollection(tt.args.sObjectName, tt.args.externalIdFieldName, tt.args.records, tt.args.batchSize)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpsertCollection(
+				tt.args.sObjectName,
+				tt.args.externalIdFieldName,
+				tt.args.records,
+				tt.args.batchSize,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpsertCollection() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1757,9 +1666,7 @@ func TestSalesforce_DeleteCollection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			got, err := sf.DeleteCollection(tt.args.sObjectName, tt.args.records, tt.args.batchSize)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.DeleteCollection() error = %v, wantErr %v", err, tt.wantErr)
@@ -1869,10 +1776,13 @@ func TestSalesforce_InsertComposite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.InsertComposite(tt.args.sObjectName, tt.args.records, tt.args.batchSize, tt.args.allOrNone)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.InsertComposite(
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.allOrNone,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.InsertComposite() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1983,10 +1893,13 @@ func TestSalesforce_UpdateComposite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.UpdateComposite(tt.args.sObjectName, tt.args.records, tt.args.batchSize, tt.args.allOrNone)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpdateComposite(
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.allOrNone,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpdateComposite() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -2101,10 +2014,14 @@ func TestSalesforce_UpsertComposite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.UpsertComposite(tt.args.sObjectName, tt.args.externalIdFieldName, tt.args.records, tt.args.batchSize, tt.args.allOrNone)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpsertComposite(
+				tt.args.sObjectName,
+				tt.args.externalIdFieldName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.allOrNone,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpsertComposite() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -2206,10 +2123,13 @@ func TestSalesforce_DeleteComposite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.DeleteComposite(tt.args.sObjectName, tt.args.records, tt.args.batchSize, tt.args.allOrNone)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.DeleteComposite(
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.allOrNone,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.DeleteComposite() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -2285,16 +2205,111 @@ func TestSalesforce_InsertBulk(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.InsertBulk(tt.args.sObjectName, tt.args.records, tt.args.batchSize, tt.args.waitForResults)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.InsertBulk(
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.InsertBulk() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Salesforce.InsertBulk() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSalesforce_InsertBulkAssign(t *testing.T) {
+	type account struct {
+		Name string
+	}
+	job := bulkJob{
+		Id:    "1234",
+		State: jobStateOpen,
+	}
+	server, sfAuth := setupTestServer(job, http.StatusOK)
+	defer server.Close()
+
+	type fields struct {
+		auth *authentication
+	}
+	type args struct {
+		sObjectName      string
+		records          any
+		batchSize        int
+		waitForResults   bool
+		assignmentRuleId string
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "successful_insert",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName: "Lead",
+				records: []account{
+					{
+						Name: "test account 1",
+					},
+					{
+						Name: "test account 2",
+					},
+				},
+				batchSize:        2000,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{"1234"},
+			wantErr: false,
+		},
+		{
+			name: "object_validation_fail",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName: "Account",
+				records: []account{
+					{
+						Name: "test account 1",
+					},
+					{
+						Name: "test account 2",
+					},
+				},
+				batchSize:        2000,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.InsertBulkAssign(
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+				tt.args.assignmentRuleId,
+			)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Salesforce.InsertBulkAssign() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Salesforce.InsertBulkAssign() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -2366,16 +2381,116 @@ func TestSalesforce_UpdateBulk(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.UpdateBulk(tt.args.sObjectName, tt.args.records, tt.args.batchSize, tt.args.waitForResults)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpdateBulk(
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpdateBulk() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Salesforce.UpdateBulk() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSalesforce_UpdateBulkAssign(t *testing.T) {
+	type account struct {
+		Id   string
+		Name string
+	}
+	job := bulkJob{
+		Id:    "1234",
+		State: jobStateOpen,
+	}
+	server, sfAuth := setupTestServer(job, http.StatusOK)
+	defer server.Close()
+
+	type fields struct {
+		auth *authentication
+	}
+	type args struct {
+		sObjectName      string
+		records          any
+		batchSize        int
+		waitForResults   bool
+		assignmentRuleId string
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "successful_update",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName: "Lead",
+				records: []account{
+					{
+						Id:   "1234",
+						Name: "test account 1",
+					},
+					{
+						Id:   "5678",
+						Name: "test account 2",
+					},
+				},
+				batchSize:        2000,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{"1234"},
+			wantErr: false,
+		},
+		{
+			name: "object_validation_fail",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName: "Account",
+				records: []account{
+					{
+						Id:   "1234",
+						Name: "test account 1",
+					},
+					{
+						Id:   "5678",
+						Name: "test account 2",
+					},
+				},
+				batchSize:        2000,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpdateBulkAssign(
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+				tt.args.assignmentRuleId,
+			)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Salesforce.UpdateBulkAssign() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Salesforce.UpdateBulkAssign() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -2450,16 +2565,121 @@ func TestSalesforce_UpsertBulk(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.UpsertBulk(tt.args.sObjectName, tt.args.externalIdFieldName, tt.args.records, tt.args.batchSize, tt.args.waitForResults)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpsertBulk(
+				tt.args.sObjectName,
+				tt.args.externalIdFieldName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpsertBulk() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("Salesforce.UpsertBulk() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSalesforce_UpsertBulkAssign(t *testing.T) {
+	type account struct {
+		ExternalId__c string
+		Name          string
+	}
+	job := bulkJob{
+		Id:    "1234",
+		State: jobStateOpen,
+	}
+	server, sfAuth := setupTestServer(job, http.StatusOK)
+	defer server.Close()
+
+	type fields struct {
+		auth *authentication
+	}
+	type args struct {
+		sObjectName         string
+		externalIdFieldName string
+		records             any
+		batchSize           int
+		waitForResults      bool
+		assignmentRuleId    string
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "successful_upsert",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Lead",
+				externalIdFieldName: "ExternalId__c",
+				records: []account{
+					{
+						ExternalId__c: "1234",
+						Name:          "test account 1",
+					},
+					{
+						ExternalId__c: "5678",
+						Name:          "test account 2",
+					},
+				},
+				batchSize:        2000,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{"1234"},
+			wantErr: false,
+		},
+		{
+			name: "object_validation_fail",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Account",
+				externalIdFieldName: "ExternalId__c",
+				records: []account{
+					{
+						ExternalId__c: "1234",
+						Name:          "test account 1",
+					},
+					{
+						ExternalId__c: "5678",
+						Name:          "test account 2",
+					},
+				},
+				batchSize:        2000,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpsertBulkAssign(
+				tt.args.sObjectName,
+				tt.args.externalIdFieldName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+				tt.args.assignmentRuleId,
+			)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Salesforce.UpsertBulkAssign() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Salesforce.UpsertBulkAssign() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -2528,10 +2748,13 @@ func TestSalesforce_DeleteBulk(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.DeleteBulk(tt.args.sObjectName, tt.args.records, tt.args.batchSize, tt.args.waitForResults)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.DeleteBulk(
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.DeleteBulk() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -2590,9 +2813,7 @@ func TestSalesforce_GetJobResults(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			got, err := sf.GetJobResults(tt.args.bulkJobId)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.GetJobResults() error = %v, wantErr %v", err, tt.wantErr)
@@ -2607,10 +2828,10 @@ func TestSalesforce_GetJobResults(t *testing.T) {
 
 func TestSalesforce_InsertBulkFile(t *testing.T) {
 	appFs = afero.NewMemMapFs() // replace appFs with mocked file system
-	if err := appFs.MkdirAll("data", 0755); err != nil {
+	if err := appFs.MkdirAll("data", 0o755); err != nil {
 		t.Fatalf("error creating directory in virtual file system")
 	}
-	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0644); err != nil {
+	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0o644); err != nil {
 		t.Fatalf("error creating file in virtual file system")
 	}
 
@@ -2668,10 +2889,13 @@ func TestSalesforce_InsertBulkFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.InsertBulkFile(tt.args.sObjectName, tt.args.filePath, tt.args.batchSize, tt.args.waitForResults)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.InsertBulkFile(
+				tt.args.sObjectName,
+				tt.args.filePath,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.InsertBulkFile() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -2683,12 +2907,101 @@ func TestSalesforce_InsertBulkFile(t *testing.T) {
 	}
 }
 
-func TestSalesforce_UpdateBulkFile(t *testing.T) {
+func TestSalesforce_InsertBulkFileAssign(t *testing.T) {
 	appFs = afero.NewMemMapFs() // replace appFs with mocked file system
-	if err := appFs.MkdirAll("data", 0755); err != nil {
+	if err := appFs.MkdirAll("data", 0o755); err != nil {
 		t.Fatalf("error creating directory in virtual file system")
 	}
-	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0644); err != nil {
+	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0o644); err != nil {
+		t.Fatalf("error creating file in virtual file system")
+	}
+
+	job := bulkJob{
+		Id:    "1234",
+		State: jobStateOpen,
+	}
+	server, sfAuth := setupTestServer(job, http.StatusOK)
+	defer server.Close()
+
+	type fields struct {
+		auth *authentication
+	}
+	type args struct {
+		sObjectName      string
+		filePath         string
+		batchSize        int
+		waitForResults   bool
+		assignmentRuleId string
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "insert bulk data successfully",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:      "Lead",
+				filePath:         "data/data.csv",
+				batchSize:        2000,
+				waitForResults:   false,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{"1234"},
+			wantErr: false,
+		},
+		{
+			name: "object validation errors",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:      "Account",
+				filePath:         "data/data.csv",
+				batchSize:        2000,
+				waitForResults:   false,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.InsertBulkFileAssign(
+				tt.args.sObjectName,
+				tt.args.filePath,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+				tt.args.assignmentRuleId,
+			)
+			if (err != nil) != tt.wantErr {
+				t.Errorf(
+					"Salesforce.InsertBulkFileAssign() error = %v, wantErr %v",
+					err,
+					tt.wantErr,
+				)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Salesforce.InsertBulkFileAssign() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSalesforce_UpdateBulkFile(t *testing.T) {
+	appFs = afero.NewMemMapFs() // replace appFs with mocked file system
+	if err := appFs.MkdirAll("data", 0o755); err != nil {
+		t.Fatalf("error creating directory in virtual file system")
+	}
+	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0o644); err != nil {
 		t.Fatalf("error creating file in virtual file system")
 	}
 
@@ -2746,10 +3059,13 @@ func TestSalesforce_UpdateBulkFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.UpdateBulkFile(tt.args.sObjectName, tt.args.filePath, tt.args.batchSize, tt.args.waitForResults)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpdateBulkFile(
+				tt.args.sObjectName,
+				tt.args.filePath,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpdateBulkFile() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -2761,12 +3077,101 @@ func TestSalesforce_UpdateBulkFile(t *testing.T) {
 	}
 }
 
-func TestSalesforce_UpsertBulkFile(t *testing.T) {
+func TestSalesforce_UpdateBulkFileAssign(t *testing.T) {
 	appFs = afero.NewMemMapFs() // replace appFs with mocked file system
-	if err := appFs.MkdirAll("data", 0755); err != nil {
+	if err := appFs.MkdirAll("data", 0o755); err != nil {
 		t.Fatalf("error creating directory in virtual file system")
 	}
-	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0644); err != nil {
+	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0o644); err != nil {
+		t.Fatalf("error creating file in virtual file system")
+	}
+
+	job := bulkJob{
+		Id:    "1234",
+		State: jobStateOpen,
+	}
+	server, sfAuth := setupTestServer(job, http.StatusOK)
+	defer server.Close()
+
+	type fields struct {
+		auth *authentication
+	}
+	type args struct {
+		sObjectName      string
+		filePath         string
+		batchSize        int
+		waitForResults   bool
+		assignmentRuleId string
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "update bulk data successfully",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:      "Lead",
+				filePath:         "data/data.csv",
+				batchSize:        2000,
+				waitForResults:   false,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{"1234"},
+			wantErr: false,
+		},
+		{
+			name: "object validation error",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:      "Account",
+				filePath:         "data/data.csv",
+				batchSize:        2000,
+				waitForResults:   false,
+				assignmentRuleId: "5678",
+			},
+			want:    []string{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpdateBulkFileAssign(
+				tt.args.sObjectName,
+				tt.args.filePath,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+				tt.args.assignmentRuleId,
+			)
+			if (err != nil) != tt.wantErr {
+				t.Errorf(
+					"Salesforce.UpdateBulkFileAssign() error = %v, wantErr %v",
+					err,
+					tt.wantErr,
+				)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Salesforce.UpdateBulkFileAssign() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSalesforce_UpsertBulkFile(t *testing.T) {
+	appFs = afero.NewMemMapFs() // replace appFs with mocked file system
+	if err := appFs.MkdirAll("data", 0o755); err != nil {
+		t.Fatalf("error creating directory in virtual file system")
+	}
+	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0o644); err != nil {
 		t.Fatalf("error creating file in virtual file system")
 	}
 
@@ -2827,10 +3232,14 @@ func TestSalesforce_UpsertBulkFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.UpsertBulkFile(tt.args.sObjectName, tt.args.externalIdFieldName, tt.args.filePath, tt.args.batchSize, tt.args.waitForResults)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpsertBulkFile(
+				tt.args.sObjectName,
+				tt.args.externalIdFieldName,
+				tt.args.filePath,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.UpsertBulkFile() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -2842,12 +3251,105 @@ func TestSalesforce_UpsertBulkFile(t *testing.T) {
 	}
 }
 
-func TestSalesforce_DeleteBulkFile(t *testing.T) {
+func TestSalesforce_UpsertBulkFileAssign(t *testing.T) {
 	appFs = afero.NewMemMapFs() // replace appFs with mocked file system
-	if err := appFs.MkdirAll("data", 0755); err != nil {
+	if err := appFs.MkdirAll("data", 0o755); err != nil {
 		t.Fatalf("error creating directory in virtual file system")
 	}
-	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0644); err != nil {
+	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0o644); err != nil {
+		t.Fatalf("error creating file in virtual file system")
+	}
+
+	job := bulkJob{
+		Id:    "1234",
+		State: jobStateOpen,
+	}
+	server, sfAuth := setupTestServer(job, http.StatusOK)
+	defer server.Close()
+
+	type fields struct {
+		auth *authentication
+	}
+	type args struct {
+		sObjectName         string
+		externalIdFieldName string
+		filePath            string
+		batchSize           int
+		waitForResults      bool
+		assignmentRuleId    string
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "upsert bulk data successfully",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Lead",
+				externalIdFieldName: "ExternalId__c",
+				filePath:            "data/data.csv",
+				batchSize:           2000,
+				waitForResults:      false,
+				assignmentRuleId:    "5678",
+			},
+			want:    []string{"1234"},
+			wantErr: false,
+		},
+		{
+			name: "object validation error",
+			fields: fields{
+				auth: &sfAuth,
+			},
+			args: args{
+				sObjectName:         "Account",
+				externalIdFieldName: "ExternalId__c",
+				filePath:            "data/data.csv",
+				batchSize:           2000,
+				waitForResults:      false,
+				assignmentRuleId:    "5678",
+			},
+			want:    []string{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.UpsertBulkFileAssign(
+				tt.args.sObjectName,
+				tt.args.externalIdFieldName,
+				tt.args.filePath,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+				tt.args.assignmentRuleId,
+			)
+			if (err != nil) != tt.wantErr {
+				t.Errorf(
+					"Salesforce.UpsertBulkFileAssign() error = %v, wantErr %v",
+					err,
+					tt.wantErr,
+				)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Salesforce.UpsertBulkFileAssign() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSalesforce_DeleteBulkFile(t *testing.T) {
+	appFs = afero.NewMemMapFs() // replace appFs with mocked file system
+	if err := appFs.MkdirAll("data", 0o755); err != nil {
+		t.Fatalf("error creating directory in virtual file system")
+	}
+	if err := afero.WriteFile(appFs, "data/data.csv", []byte("header\nrow"), 0o644); err != nil {
 		t.Fatalf("error creating file in virtual file system")
 	}
 
@@ -2905,10 +3407,13 @@ func TestSalesforce_DeleteBulkFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			got, err := sf.DeleteBulkFile(tt.args.sObjectName, tt.args.filePath, tt.args.batchSize, tt.args.waitForResults)
+			sf := buildSalesforceStruct(tt.fields.auth)
+			got, err := sf.DeleteBulkFile(
+				tt.args.sObjectName,
+				tt.args.filePath,
+				tt.args.batchSize,
+				tt.args.waitForResults,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.DeleteBulkFile() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -2999,10 +3504,8 @@ func TestSalesforce_QueryBulkExport(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
-			if err := sf.QueryBulkExport(tt.args.query, tt.args.filePath, time.Minute); (err != nil) != tt.wantErr {
+			sf := buildSalesforceStruct(tt.fields.auth)
+			if err := sf.QueryBulkExport(tt.args.query, tt.args.filePath); (err != nil) != tt.wantErr {
 				t.Errorf("Salesforce.QueryBulkExport() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -3092,11 +3595,13 @@ func TestSalesforce_QueryStructBulkExport(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			if err := sf.QueryStructBulkExport(tt.args.soqlStruct, tt.args.filePath); (err != nil) != tt.wantErr {
-				t.Errorf("Salesforce.QueryStructBulkExport() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf(
+					"Salesforce.QueryStructBulkExport() error = %v, wantErr %v",
+					err,
+					tt.wantErr,
+				)
 			}
 		})
 	}
@@ -3186,9 +3691,7 @@ func TestSalesforce_CreateQueryBulkJob(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sf := &Salesforce{
-				auth: tt.fields.auth,
-			}
+			sf := buildSalesforceStruct(tt.fields.auth)
 			it, err := sf.QueryBulkIterator(tt.args.query)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Salesforce.CreateQueryBulkJob() error = %v, wantErr %v", err, tt.wantErr)
@@ -3196,14 +3699,22 @@ func TestSalesforce_CreateQueryBulkJob(t *testing.T) {
 			if it != nil {
 				for it.Next() {
 					if err := it.Decode(&tt.args.val); (err != nil) != tt.wantErr {
-						t.Fatalf("Salesforce.IteratorJob.Decode() error = %v, wantErr %v", err, tt.wantErr)
+						t.Fatalf(
+							"Salesforce.IteratorJob.Decode() error = %v, wantErr %v",
+							err,
+							tt.wantErr,
+						)
 					}
 					if len(tt.args.val) == 0 || tt.args.val[0].Col != "row" {
 						t.Fatalf("Salesforce.IteratorJob.Val() val don't match")
 					}
 				}
 				if err := it.Error(); (err != nil) != tt.wantErr {
-					t.Fatalf("Salesforce.IteratorJob.Error() error = %v, wantErr %v", err, tt.wantErr)
+					t.Fatalf(
+						"Salesforce.IteratorJob.Error() error = %v, wantErr %v",
+						err,
+						tt.wantErr,
+					)
 				}
 			}
 		})
@@ -3219,7 +3730,7 @@ func TestGetAccessToken(t *testing.T) {
 		Signature:   "signed",
 	}
 
-	sf := &Salesforce{auth: &sfAuth}
+	sf := buildSalesforceStruct(&sfAuth)
 
 	tests := []struct {
 		name string
@@ -3242,6 +3753,43 @@ func TestGetAccessToken(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.sf.GetAccessToken(); got != tt.want {
 				t.Errorf("GetAccessToken() error = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetInstanceUrl(t *testing.T) {
+	sfAuth := authentication{
+		AccessToken: "1234",
+		InstanceUrl: "example.com",
+		Id:          "123abc",
+		IssuedAt:    "01/01/1970",
+		Signature:   "signed",
+	}
+
+	sf := buildSalesforceStruct(&sfAuth)
+
+	tests := []struct {
+		name string
+		sf   *Salesforce
+		want string
+	}{
+		{
+			name: "valid_instance_url",
+			sf:   sf,
+			want: "example.com",
+		},
+		{
+			name: "no_instance_url",
+			sf:   &Salesforce{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.sf.GetInstanceUrl(); got != tt.want {
+				t.Errorf("GetInstanceUrl() error = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -9,6 +9,7 @@ A REST API wrapper for interacting with Salesforce using the Go programming lang
 [![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go)
 
 - Read my [blog post](https://www.kylecapehart.com/posts/go-salesforce/) for an in-depth example
+- Check out [go-salesforce-examples](https://github.com/k-capehart/go-salesforce-examples) for more examples
 - Read the [Salesforce REST API documentation](https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_list.htm)
 - Read the [Golang documentation](https://go.dev/doc/)
 
@@ -17,25 +18,37 @@ A REST API wrapper for interacting with Salesforce using the Go programming lang
 - [Installation](#installation)
 - [Types](#types)
 - [Authentication](#authentication)
+- [Configuration](#configuration)
 - [SOQL](#soql)
 - [SObject Single Record Operations](#sobject-single-record-operations)
 - [SObject Collections](#sobject-collections)
 - [Composite Requests](#composite-requests)
 - [Bulk v2](#bulk-v2)
 - [Other](#other)
-- [Contributing](#contributing)
 
 ## Installation
 
 ```
-go get github.com/k-capehart/go-salesforce/v2
+go get github.com/k-capehart/go-salesforce/v3
 ```
 
 ## Types
 
 ```go
 type Salesforce struct {
-    auth *authentication
+    auth   *authentication
+    config configuration
+}
+
+type configuration struct {
+    compressionHeaders           bool
+    apiVersion                   string
+    batchSizeMax                 int
+    bulkBatchSizeMax             int
+    httpClient                   *http.Client
+    roundTripper                 http.RoundTripper
+    shouldValidateAuthentication bool
+    httpTimeout                  time.Duration
 }
 
 type Creds struct {
@@ -76,33 +89,43 @@ type BulkJobResults struct {
 }
 ```
 
+### Salesforce tag
+
+- tag struct fields with the `salesforce` tag to decode them into their Salesforce API field names
+
+```go
+type Account struct {
+    ExternalID string `salesforce:"ExternalId__c"`
+    Name       string
+}
+```
+
 ## Authentication
 
 - To begin using, create an instance of the `Salesforce` type by calling `salesforce.Init()` and passing your credentials as arguments
 - Once authenticated, all other functions can be called as methods using the resulting `Salesforce` instance
+- [Creating an External Client App in Salesforce](https://help.salesforce.com/s/articleView?id=xcloud.external_client_apps.htm&type=5)
+- [Review Salesforce OAuth flows](https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_flows.htm&type=5)
 
 ### Init
 
-`func Init(creds Creds) *Salesforce`
+`func Init(creds Creds, options ...Option) *Salesforce`
 
 Returns a new Salesforce instance given a user's credentials.
 
 - `creds`: a struct containing the necessary credentials to authenticate into a Salesforce org
-- [Creating a Connected App in Salesforce](https://help.salesforce.com/s/articleView?id=sf.connected_app_create.htm&type=5)
-- [Review Salesforce oauth flows](https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_flows.htm&type=5)
+- `options`: optional configuration - see [Configuration](#configuration)
 - If an operation fails with the Error Code `INVALID_SESSION_ID`, go-salesforce will attempt to refresh the session by resubmitting the same credentials used during initialization
+- Configuration values are set to the defaults if not specified
 
 [Client Credentials Flow](https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_client_credentials_flow.htm&type=5)
 
 ```go
 sf, err := salesforce.Init(salesforce.Creds{
-    Domain:         DOMAIN,
+    Domain:         DOMAIN, // ex: https://myslug.my.salesforce.com
     ConsumerKey:    CONSUMER_KEY,
     ConsumerSecret: CONSUMER_SECRET,
 })
-if err != nil {
-    panic(err)
-}
 ```
 
 [Username-Password Flow](https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_username_password_flow.htm&type=5)
@@ -116,9 +139,6 @@ sf, err := salesforce.Init(salesforce.Creds{
     ConsumerKey:    CONSUMER_KEY,
     ConsumerSecret: CONSUMER_SECRET,
 })
-if err != nil {
-    panic(err)
-}
 ```
 
 [JWT Bearer Flow](https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_jwt_flow.htm&type=5)
@@ -130,9 +150,6 @@ sf, err := salesforce.Init(salesforce.Creds{
     ConsumerKey:    CONSUMER_KEY,
     ConsumerRSAPem: CONSUMER_RSA_PEM,
 })
-if err != nil {
-    panic(err)
-}
 ```
 
 Authenticate with an Access Token
@@ -144,12 +161,9 @@ sf, err := salesforce.Init(salesforce.Creds{
     Domain:      DOMAIN,
     AccessToken: ACCESS_TOKEN,
 })
-if err != nil {
-    panic(err)
-}
 ```
 
-### GetAccessToken()
+### GetAccessToken
 
 `func (sf *Salesforce) GetAccessToken() string`
 
@@ -158,6 +172,53 @@ Returns the current session's Access Token as a string.
 ```go
 token := sf.GetAccessToken()
 ```
+
+### GetInstanceUrl
+
+`func (sf *Salesforce) GetInstanceUrl() string`
+
+Returns the current session's Instance URL as a string.
+
+```go
+url := sf.GetInstanceUrl()
+```
+
+### GetAuthFlow
+
+`func (sf *Salesforce) GetAuthFlow() AuthFlowType`
+
+Returns the auth flow used for authentication.
+
+```go
+authType := sf.GetAuthFlow()
+```
+
+## Configuration
+
+Configure optional parameters for your Salesforce instance
+
+Optional configuration: 
+- `func WithCompressionHeaders(compression bool) Option` - see [docs](https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/intro_rest_compression.htm)
+- `func WithAPIVersion(version string) Option` - set API version manually instead of using default
+- `func WithBatchSizeMax(size int)` - for collections API
+- `func WithBulkBatchSizeMax(size int) Option` - for Bulk API
+- `func WithBulkPollTimeout(timeout time.Duration) Option` - set max wait when polling bulk results with `waitForResults=true`
+- `func WithRoundTripper(rt http.RoundTripper) Option` - for http requests
+- `func WithHTTPTimeout(timeout time.Duration) Option` - set custom timeout
+- `func WithValidateAuthentication(validate bool) Option` - optionally skip validation during certain auth flows
+
+Get configuration:
+- `func (sf *Salesforce) GetAPIVersion() string`
+- `func (sf *Salesforce) GetBatchSizeMax() int`
+- `func (sf *Salesforce) GetBulkBatchSizeMax() int`
+- `func (sf *Salesforce) GetCompressionHeaders() bool`
+- `func (sf *Salesforce) GetHTTPClient() *http.Client`
+
+See [HTTP_CLIENT_CONFIG](https://github.com/k-capehart/go-salesforce/blob/main/HTTP_CLIENT_CONFIG.md) for additional documentation on round trippers
+
+See [examples/functional-config](https://github.com/k-capehart/go-salesforce/blob/main/examples/functional-config/main.go) and [examples/http-config](https://github.com/k-capehart/go-salesforce/blob/main/examples/http-config/main.go) for usage
+
+See [WithHeader](#withheader) for custom header options
 
 ## SOQL
 
@@ -184,9 +245,6 @@ type Contact struct {
 ```go
 contacts := []Contact{}
 err := sf.Query("SELECT Id, LastName FROM Contact WHERE LastName = 'Lee'", &contacts)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### QueryStruct
@@ -226,34 +284,42 @@ soqlStruct := ContactSoqlQuery{
 }
 contacts := []Contact{}
 err := sf.QueryStruct(soqlStruct, &contacts)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### Handling Relationship Queries
 
 When querying Salesforce objects, it's common to access fields that are related through parent-child or lookup relationships. For instance, querying `Account.Name` with related `Contact` might look like this:
 
-#### Example SOQL Query
-
-```sql
-SELECT Id, Account.Name FROM Contact
-```
-
-#### Corresponding Go Structs
-
-To effectively handle the data returned by this query, define your Go structs as follows:
-
 ```go
-type ContentDocumentLink struct {
+type Account struct {
+    Name string
+}
+
+type Contact struct {
     Id       string
     Account Account
 }
 
-type Account struct {
-    Name string
+contacts := []Contact{}
+sf.Query("SELECT Id, Account.Name FROM Contact", &contacts)
+```
+
+## DML
+
+Note that any DML operation that includes an uninitialized struct field, or 0 or null value, will effectively be treated as passing a null value to Salesforce.
+
+```go
+type Contact struct {
+    Id        string
+    LastName  string
+    FirstName string
 }
+
+contact := Contact{
+    Id:       "003Dn00000pEYQSIA4",
+    LastName: "Banner",
+}
+err = sf.UpdateOne("Contact", contact) // will update the FirstName of the contact to an empty string ""
 ```
 
 ## SObject Single Record Operations
@@ -284,9 +350,6 @@ contact := Contact{
     LastName: "Stark",
 }
 result, err := sf.InsertOne("Contact", contact)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### UpdateOne
@@ -312,9 +375,6 @@ contact := Contact{
     LastName: "Banner",
 }
 err := sf.UpdateOne("Contact", contact)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### UpsertOne
@@ -329,21 +389,18 @@ Updates (or inserts) one salesforce record using the given external Id
   - A value for the External Id is required
 
 ```go
-type ContactWithExternalId struct {
+type Contact struct {
     ContactExternalId__c string
     LastName             string
 }
 ```
 
 ```go
-contact := ContactWithExternalId{
+contact := Contact{
     ContactExternalId__c: "Avng0",
     LastName:             "Rogers",
 }
 result, err := sf.UpsertOne("Contact", "ContactExternalId__c", contact)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### DeleteOne
@@ -367,9 +424,6 @@ contact := Contact{
     Id: "003Dn00000pEYQSIA4",
 }
 err := sf.DeleteOne("Contact", contact)
-if err != nil {
-    panic(err)
-}
 ```
 
 ## SObject Collections
@@ -409,9 +463,6 @@ contacts := []Contact{
     },
 }
 results, err := sf.InsertCollection("Contact", contacts, 200)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### UpdateCollection
@@ -444,9 +495,6 @@ contacts := []Contact{
     },
 }
 results, err := sf.UpdateCollection("Contact", contacts, 200)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### UpsertCollection
@@ -462,14 +510,14 @@ Updates (or inserts) a list of salesforce records using the given ExternalId
 - `batchSize`: `1 <= batchSize <= 200`
 
 ```go
-type ContactWithExternalId struct {
+type Contact struct {
     ContactExternalId__c string
     LastName             string
 }
 ```
 
 ```go
-contacts := []ContactWithExternalId{
+contacts := []Contact{
     {
         ContactExternalId__c: "Avng1",
         LastName:             "Danvers",
@@ -480,9 +528,6 @@ contacts := []ContactWithExternalId{
     },
 }
 results, err := sf.UpsertCollection("Contact", "ContactExternalId__c", contacts, 200)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### DeleteCollection
@@ -512,9 +557,6 @@ contacts := []Contact{
     },
 }
 results, err := sf.DeleteCollection("Contact", contacts, 200)
-if err != nil {
-    panic(err)
-}
 ```
 
 ## Composite Requests
@@ -526,8 +568,7 @@ Make numerous 'subrequests' contained within a single 'composite request', reduc
   - For DML operations, max number of records to be processed is determined by batch size (`25 * (batch size)`)
   - So if batch size is 1, then max number of records to be included in request is 25
   - If batch size is 200, then max is 5000
-- Can optionally allow partial successes by setting allOrNone parameter
-  - If true, then successes are still committed to the database even if a record fails
+- If allOrNone is true, then records are only committed to database if everything succeeds
 - Will return an instance of SalesforceResults which contains information on each affected record and whether DML errors were encountered
 
 ### InsertComposite
@@ -557,9 +598,6 @@ contacts := []Contact{
     },
 }
 results, err := sf.InsertComposite("Contact", contacts, 200, true)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### UpdateComposite
@@ -593,9 +631,6 @@ contacts := []Contact{
     },
 }
 results, err := sf.UpdateComposite("Contact", contacts, 200, true)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### UpsertComposite
@@ -612,14 +647,14 @@ Updates (or inserts) a list of salesforce records using the given ExternalId in 
 - `allOrNone`: denotes whether to roll back entire operation if a record fails
 
 ```go
-type ContactWithExternalId struct {
+type Contact struct {
     ContactExternalId__c string
     LastName             string
 }
 ```
 
 ```go
-contacts := []ContactWithExternalId{
+contacts := []Contact{
     {
         ContactExternalId__c: "Avng3",
         LastName:             "Maximoff",
@@ -630,9 +665,6 @@ contacts := []ContactWithExternalId{
     },
 }
 results, err := sf.UpsertComposite("Contact", "ContactExternalId__c", contacts, 200, true)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### DeleteComposite
@@ -663,9 +695,6 @@ contacts := []Contact{
     },
 }
 results, err := sf.DeleteComposite("Contact", contacts, 200, true)
-if err != nil {
-    panic(err)
-}
 ```
 
 ## Bulk v2
@@ -687,9 +716,6 @@ Performs a query and exports the data to a csv file
 
 ```go
 err := sf.QueryBulkExport("SELECT Id, FirstName, LastName FROM Contact", "data/export.csv")
-if err != nil {
-    panic(err)
-}
 ```
 
 ### QueryStructBulkExport
@@ -721,9 +747,6 @@ soqlStruct := ContactSoqlQuery{
     SelectClause: ContactSoql{},
 }
 err := sf.QueryStructBulkExport(soqlStruct, "data/export2.csv")
-if err != nil {
-    panic(err)
-}
 ```
 
 ### QueryBulkIterator
@@ -751,6 +774,36 @@ for it.Next() {
     if err := it.Decode(&data); err != nil {
         panic(err)
     }
+    fmt.Println(data)
+}
+
+if err := it.Error(); err != nil {
+    panic(err)
+}
+```
+
+#### Bulk with nested objects
+
+- Nested objects are supported using the `csv` tag
+- The `csv` tag should be formatted as `csv:"APIFieldName.,inline"`
+
+```go
+type ContactWithAltOwner struct {
+    Id                 string
+    AlternateOwnerName User `csv:"Alternate_Owner__r.,inline"`
+}
+
+it, err = sf.QueryBulkIterator("SELECT Id, Alternate_Owner__r.Name FROM Contact")
+if err != nil {
+    panic(err)
+}
+
+for it.Next() {
+    var data []Contact
+    if err := it.Decode(&data); err != nil {
+        panic(err)
+    }
+    fmt.Println(data)
 }
 
 if err := it.Error(); err != nil {
@@ -785,9 +838,6 @@ contacts := []Contact{
     },
 }
 jobIds, err := sf.InsertBulk("Contact", contacts, 1000, false)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### InsertBulkFile
@@ -812,9 +862,60 @@ Bruce,Banner
 
 ```go
 jobIds, err := sf.InsertBulkFile("Contact", "data/avengers.csv", 1000, false)
-if err != nil {
-    panic(err)
+```
+
+### InsertBulkAssign
+
+`func (sf *Salesforce) InsertBulkAssign(sObjectName string, records any, batchSize int, waitForResults bool, assignmentRuleId string) ([]string, error)`
+
+Inserts a list of Lead or Case records to be assigned via an Assignment rule, using Bulk API v2, returning a list of Job IDs
+
+- `sObjectName`: API name of Salesforce object (must be Lead or Case)
+- `records`: a slice of Lead or Case records
+- `batchSize`: `1 <= batchSize <= 10000`
+- `waitForResults`: denotes whether to wait for jobs to finish
+- `assignmentRuleId`: the Salesforce Id of a Lead or Case Assignment Rule
+
+```go
+type Lead struct {
+    LastName string
+    Company string
 }
+```
+
+```go
+leads := []Lead{
+    {
+        LastName: "Spector",
+        Company:  "The Avengers",
+    },
+}
+jobIds, err := sf.InsertBulkAssign("Lead", leads, 100, true, "01QDn00000112FHMAY")
+```
+
+### InsertBulkFileAssign
+
+`func (sf *Salesforce) InsertBulkFileAssign(sObjectName string, filePath string, batchSize int, waitForResults bool, assignmentRuleId string) ([]string, error)`
+
+Inserts a list of Lead or Case records to be assigned via an Assignment rule, from a csv file using Bulk API v2, returning a list of Job IDs
+
+- `sObjectName`: API name of Salesforce object (must be Lead or Case)
+- `filePath`: path to a csv file containing Lead or Case data
+- `batchSize`: `1 <= batchSize <= 10000`
+- `waitForResults`: denotes whether to wait for jobs to finish
+- `assignmentRuleId`: the Salesforce Id of a Lead or Case Assignment Rule
+
+`data/avengers.csv`
+
+```
+FirstName,LastName,Company
+Tony,Stark,The Avengers
+Steve,Rogers,The Avengers
+Bruce,Banner,The Avengers
+```
+
+```go
+jobIds, err := sf.InsertBulkFileAssign("Lead", "data/avengers.csv", 1000, false, "01QDn00000112FHMAY")
 ```
 
 ### UpdateBulk
@@ -848,9 +949,6 @@ contacts := []Contact{
     },
 }
 jobIds, err := sf.UpdateBulk("Contact", contacts, 1000, false)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### UpdateBulkFile
@@ -879,9 +977,62 @@ Id,FirstName,LastName
 
 ```go
 jobIds, err := sf.UpdateBulkFile("Contact", "data/update_avengers.csv", 1000, false)
-if err != nil {
-    panic(err)
+```
+
+### UpdateBulkAssign
+
+`func (sf *Salesforce) UpdateBulkAssign(sObjectName string, records any, batchSize int, waitForResults bool, assignmentRuleId string) ([]string, error)`
+
+Updates a list of Lead or Case records to be assigned via an Assignment rule, using Bulk API v2, returning a list of Job IDs
+
+- `sObjectName`: API name of Salesforce object (must be Lead or Case)
+- `records`: a slice of Lead or Case records
+- `batchSize`: `1 <= batchSize <= 10000`
+- `waitForResults`: denotes whether to wait for jobs to finish
+- `assignmentRuleId`: the Salesforce Id of a Lead or Case Assignment Rule
+
+```go
+type Lead struct {
+    Id        string
+    LastName  string
+    Company   string
 }
+```
+
+```go
+leads := []Lead{
+    {
+        Id:       "00QDn0000024r6FMAQ",
+        LastName: "Grant",
+        Company:  "The Avengers",
+    },
+}
+jobIds, err := sf.UpdateBulkAssign("Lead", leads, 100, true, "01QDn00000112FHMAY")
+```
+
+### UpdateBulkFileAssign
+
+`func (sf *Salesforce) UpdateBulkFileAssign(sObjectName string, filePath string, batchSize int, waitForResults bool, assignmentRuleId string) ([]string, error)`
+
+Updates a list of Lead or Case records to be assigned via an Assignment rule, from a csv file using Bulk API v2, returning a list of Job IDs
+
+- `sObjectName`: API name of Salesforce object (must be Lead or Case)
+- `filePath`: path to a csv file containing Lead or Case data
+- `batchSize`: `1 <= batchSize <= 10000`
+- `waitForResults`: denotes whether to wait for jobs to finish
+- `assignmentRuleId`: the Salesforce Id of a Lead or Case Assignment Rule
+
+`data/update_avengers.csv`
+
+```
+Id,FirstName,LastName,Company
+00QDn0000024r6WMAQ,Clint,Barton,The Avengers
+00QDn0000024r6VMAQ,Natasha,Romanoff,The Avengers
+00QDn0000024r6UMAQ,Hank,Pym,The Avengers
+```
+
+```go
+jobIds, err := sf.UpdateBulkFileAssign("Lead", "data/update_avengers.csv", 100, true, "01QDn00000112FHMAY")
 ```
 
 ### UpsertBulk
@@ -898,14 +1049,14 @@ Updates (or inserts) a list of salesforce records using Bulk API v2, returning a
 - `waitForResults`: denotes whether to wait for jobs to finish
 
 ```go
-type ContactWithExternalId struct {
+type Contact struct {
     ContactExternalId__c string
     LastName             string
 }
 ```
 
 ```go
-contacts := []ContactWithExternalId{
+contacts := []Contact{
     {
         ContactExternalId__c: "Avng5",
         LastName:             "Rhodes",
@@ -916,9 +1067,6 @@ contacts := []ContactWithExternalId{
     },
 }
 jobIds, err := sf.UpsertBulk("Contact", "ContactExternalId__c", contacts, 1000, false)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### UpsertBulkFile
@@ -946,9 +1094,65 @@ Avng10,Danny,Rand
 
 ```go
 jobIds, err := sf.UpsertBulkFile("Contact", "ContactExternalId__c", "data/upsert_avengers.csv", 1000, false)
-if err != nil {
-    panic(err)
+```
+
+### UpsertBulkAssign
+
+`func (sf *Salesforce) UpsertBulkAssign(sObjectName string, externalIdFieldName string, records any, batchSize int, waitForResults bool, assignmentRuleId string) ([]string, error)`
+
+Updates (or inserts) a list of Lead or Case records to be assigned via an Assignment rule, using Bulk API v2, returning a list of Job IDs
+
+- `sObjectName`: API name of Salesforce object (must be Lead or Case)
+- `externalIdFieldName`: field API name for an external Id that exists on the given object
+- `records`: a slice of Lead or Case records
+- `batchSize`: `1 <= batchSize <= 10000`
+- `waitForResults`: denotes whether to wait for jobs to finish
+- `assignmentRuleId`: the Salesforce Id of a Lead or Case Assignment Rule
+
+```go
+type Lead struct {
+    LeadExternalId__c string
+    LastName          string
+    Company           string
 }
+```
+
+```go
+leads := []Lead{
+    {
+        LeadExternalId__c: "MK3",
+        LastName:          "Lockley",
+        Company:           "The Avengers",
+    },
+}
+jobIds, err := sf.UpsertBulkAssign("Lead", "LeadExternalId__c", leads, 100, true, "00QDn0000024r6FMAQ")
+```
+
+### UpsertBulkFileAssign
+
+`func (sf *Salesforce) UpsertBulkFileAssign(sObjectName string, externalIdFieldName string, filePath string, batchSize int, waitForResults bool, assignmentRuleId string) ([]string, error)`
+
+Updates (or inserts) a list of Lead or Case records to be assigned via an Assignment rule, from a csv file using Bulk API v2, returning a list of Job IDs
+
+- `sObjectName`: API name of Salesforce object (must be Lead or Case)
+- `externalIdFieldName`: field API name for an external Id that exists on the given object
+- `filePath`: path to a csv file containing salesforce data
+  - A value for the External Id is required within csv data
+- `batchSize`: `1 <= batchSize <= 10000`
+- `waitForResults`: denotes whether to wait for jobs to finish
+- `assignmentRuleId`: the Salesforce Id of a Lead or Case Assignment Rule
+
+`data/upsert_avengers`
+
+```
+LeadExternalId__c,FirstName,LastName,Company
+Avng11,Nick,Fury,The Avengers
+Avng12,Maria,Hill,The Avengers
+Avng13,Howard,Stark,The Avengers
+```
+
+```go
+jobIds, err := sf.UpsertBulkFileAssign("Lead", "LeadExternalId__c", "data/upsert_avengers.csv", 100, true, "01QDn00000112FHMAY")
 ```
 
 ### DeleteBulk
@@ -979,9 +1183,6 @@ contacts := []ContactIds{
     },
 }
 jobIds, err := sf.DeleteBulk("Contact", contacts, 1000, false)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### DeleteBulkFile
@@ -1010,9 +1211,6 @@ Id
 
 ```go
 jobIds, err := sf.DeleteBulkFile("Contact", "data/delete_avengers.csv", 1000, false)
-if err != nil {
-    panic(err)
-}
 ```
 
 ### GetJobResults
@@ -1053,13 +1251,14 @@ for _, id := range jobIds {
 
 ### DoRequest
 
-`func (sf *Salesforce) DoRequest(method string, uri string, body []byte) (*http.Response, error)`
+`func (sf *Salesforce) DoRequest(method string, uri string, body []byte, opts ...RequestOption) (*http.Response, error)`
 
 Make a http call to Salesforce, returning a response to be parsed by the client
 
 - `method`: request method ("GET", "POST", "PUT", "PATCH", "DELETE")
 - `uri`: uniform resource identifier (include everything after `/services/data/apiVersion`)
 - `body`: json encoded body to be included in request
+- `opts`: optional request options (currently supports custom headers via `WithHeader`)
 
 Example to call the `/limits` endpoint
 
@@ -1075,20 +1274,31 @@ if err != nil {
 fmt.Println(string(respBody))
 ```
 
-## Contributing
+### WithHeader
 
-Anyone is welcome to contribute.
+`func WithHeader(key, value string) RequestOption`
 
-- Open an issue or discussion post to track the effort
-- Fork this repository, then clone it
-- Place this in your own module's `go.mod` to enable testing local changes
-  - `replace github.com/k-capehart/go-salesforce/v2 => /path_to_local_fork/`
-- Run tests
-  - `go test -cover`
-- Generate code coverage output
-  - `go test -v -coverprofile cover.out && go tool cover -html cover.out -o cover.html`
-  - Note that [codecov](https://app.codecov.io/gh/k-capehart/go-salesforce) does not count partial lines so calculations may differ
-- Linting
-  - Install [golangci-lint](https://golangci-lint.run/welcome/install/)
-  - `golangci-lint run`
-- Create a PR and link the issue
+Creates a request option that sets a custom header on the HTTP request
+
+- `key`: the header name
+- `value`: the header value
+
+```go
+// Use If-Modified-Since for efficient caching
+resp, err := sf.DoRequest("GET", "/sobjects/Account/describe", nil,
+    salesforce.WithHeader("If-Modified-Since", "Wed, 21 Oct 2015 07:28:00 GMT"))
+if err != nil {
+    panic(err)
+}
+
+if resp.StatusCode == 304 {
+    fmt.Println("Data not modified, using cached version")
+}
+```
+
+```go
+// Multiple custom headers
+resp, err := sf.DoRequest("GET", "/sobjects", nil,
+    salesforce.WithHeader("If-Modified-Since", "Wed, 21 Oct 2015 07:28:00 GMT"),
+    salesforce.WithHeader("Accept-Language", "en-US"))
+```

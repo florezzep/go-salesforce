@@ -1,19 +1,19 @@
 module github.com/florezzep/go-salesforce
 
-go 1.23.0
+go 1.24.5
+
+require github.com/forcedotcom/go-soql v0.0.0-20240507183026-011ceab61b9e
 
 require (
-	github.com/forcedotcom/go-soql v0.0.0-20240507183026-011ceab61b9e
-	github.com/go-viper/mapstructure/v2 v2.2.1
-	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/go-viper/mapstructure/v2 v2.5.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jszwec/csvutil v1.10.0
-	github.com/spf13/afero v1.11.0
-	k8s.io/apimachinery v0.31.3
+	github.com/spf13/afero v1.15.0
 )
 
 require (
-	github.com/go-logr/logr v1.4.2 // indirect
-	golang.org/x/text v0.16.0 // indirect
-	k8s.io/klog/v2 v2.130.1 // indirect
-	k8s.io/utils v0.0.0-20240711033017-18e509b52bc8 // indirect
+	github.com/onsi/gomega v1.38.3 // indirect
+	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/text v0.32.0 // indirect
 )

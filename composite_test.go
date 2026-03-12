@@ -141,9 +141,19 @@ func Test_createCompositeRequestForCollection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := createCompositeRequestForCollection(tt.args.method, tt.args.url, tt.args.allOrNone, tt.args.batchSize, tt.args.recordMap)
+			got, err := createCompositeRequestForCollection(
+				tt.args.method,
+				tt.args.url,
+				tt.args.allOrNone,
+				tt.args.batchSize,
+				tt.args.recordMap,
+			)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("createCompositeRequestForCollection() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf(
+					"createCompositeRequestForCollection() error = %v, wantErr %v",
+					err,
+					tt.wantErr,
+				)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
@@ -306,7 +316,7 @@ func Test_doCompositeRequest(t *testing.T) {
 	}
 
 	type args struct {
-		auth    *authentication
+		sf      *Salesforce
 		compReq compositeRequest
 	}
 	tests := []struct {
@@ -318,7 +328,7 @@ func Test_doCompositeRequest(t *testing.T) {
 		{
 			name: "successful_request",
 			args: args{
-				auth:    &sfAuth,
+				sf:      buildSalesforceStruct(&sfAuth),
 				compReq: compReq,
 			},
 			want: SalesforceResults{
@@ -330,7 +340,7 @@ func Test_doCompositeRequest(t *testing.T) {
 		{
 			name: "bad_request",
 			args: args{
-				auth:    &badReqSfAuth,
+				sf:      buildSalesforceStruct(&badReqSfAuth),
 				compReq: compReq,
 			},
 			want:    SalesforceResults{},
@@ -339,7 +349,7 @@ func Test_doCompositeRequest(t *testing.T) {
 		{
 			name: "salesforce_errors",
 			args: args{
-				auth:    &sfErrorSfAuth,
+				sf:      buildSalesforceStruct(&sfErrorSfAuth),
 				compReq: compReq,
 			},
 			want:    sfResultsFail,
@@ -348,7 +358,7 @@ func Test_doCompositeRequest(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := doCompositeRequest(tt.args.auth, tt.args.compReq)
+			got, err := doCompositeRequest(tt.args.sf, tt.args.compReq)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("doCompositeRequest() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -378,7 +388,7 @@ func Test_doInsertComposite(t *testing.T) {
 	defer server.Close()
 
 	type args struct {
-		auth        *authentication
+		sf          *Salesforce
 		sObjectName string
 		records     any
 		allOrNone   bool
@@ -393,7 +403,7 @@ func Test_doInsertComposite(t *testing.T) {
 		{
 			name: "successful_insert_composite",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records: []account{
 					{
@@ -415,7 +425,7 @@ func Test_doInsertComposite(t *testing.T) {
 		{
 			name: "bad_data",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records:     "1",
 				batchSize:   200,
@@ -427,7 +437,13 @@ func Test_doInsertComposite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := doInsertComposite(tt.args.auth, tt.args.sObjectName, tt.args.records, tt.args.allOrNone, tt.args.batchSize)
+			got, err := doInsertComposite(
+				tt.args.sf,
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.allOrNone,
+				tt.args.batchSize,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("doInsertComposite() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -458,7 +474,7 @@ func Test_doUpdateComposite(t *testing.T) {
 	defer server.Close()
 
 	type args struct {
-		auth        *authentication
+		sf          *Salesforce
 		sObjectName string
 		records     any
 		allOrNone   bool
@@ -473,7 +489,7 @@ func Test_doUpdateComposite(t *testing.T) {
 		{
 			name: "successful_update_composite",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records: []account{
 					{
@@ -497,7 +513,7 @@ func Test_doUpdateComposite(t *testing.T) {
 		{
 			name: "bad_data",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records:     "1",
 				batchSize:   200,
@@ -509,7 +525,7 @@ func Test_doUpdateComposite(t *testing.T) {
 		{
 			name: "fail_no_id",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records: []account{
 					{
@@ -525,7 +541,13 @@ func Test_doUpdateComposite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := doUpdateComposite(tt.args.auth, tt.args.sObjectName, tt.args.records, tt.args.allOrNone, tt.args.batchSize)
+			got, err := doUpdateComposite(
+				tt.args.sf,
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.allOrNone,
+				tt.args.batchSize,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("doUpdateComposite() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -556,7 +578,7 @@ func Test_doUpsertComposite(t *testing.T) {
 	defer server.Close()
 
 	type args struct {
-		auth        *authentication
+		sf          *Salesforce
 		sObjectName string
 		fieldName   string
 		records     any
@@ -572,7 +594,7 @@ func Test_doUpsertComposite(t *testing.T) {
 		{
 			name: "successful_upsert_composite",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				fieldName:   "ExternalId__c",
 				records: []account{
@@ -597,7 +619,7 @@ func Test_doUpsertComposite(t *testing.T) {
 		{
 			name: "bad_data",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				fieldName:   "ExternalId__c",
 				records:     "1",
@@ -610,7 +632,7 @@ func Test_doUpsertComposite(t *testing.T) {
 		{
 			name: "fail_no_external_id",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				fieldName:   "ExternalId__c",
 				records: []account{
@@ -627,12 +649,19 @@ func Test_doUpsertComposite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := doUpsertComposite(tt.args.auth, tt.args.sObjectName, tt.args.fieldName, tt.args.records, tt.args.allOrNone, tt.args.batchSize)
+			got, err := doUpsertComposite(
+				tt.args.sf,
+				tt.args.sObjectName,
+				tt.args.fieldName,
+				tt.args.records,
+				tt.args.allOrNone,
+				tt.args.batchSize,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("doUpsertComposite() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("doUpsertComposite() = %v, want %v", err, tt.want)
+				t.Errorf("doUpsertComposite() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -657,7 +686,7 @@ func Test_doDeleteComposite(t *testing.T) {
 	defer server.Close()
 
 	type args struct {
-		auth        *authentication
+		sf          *Salesforce
 		sObjectName string
 		records     any
 		allOrNone   bool
@@ -672,7 +701,7 @@ func Test_doDeleteComposite(t *testing.T) {
 		{
 			name: "successful_delete_composite_single_batch",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records: []account{
 					{
@@ -694,7 +723,7 @@ func Test_doDeleteComposite(t *testing.T) {
 		{
 			name: "successful_delete_composite_multi_batch",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records: []account{
 					{
@@ -716,7 +745,7 @@ func Test_doDeleteComposite(t *testing.T) {
 		{
 			name: "bad_data",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records:     "1",
 				batchSize:   200,
@@ -728,7 +757,7 @@ func Test_doDeleteComposite(t *testing.T) {
 		{
 			name: "fail_no_id",
 			args: args{
-				auth:        &sfAuth,
+				sf:          buildSalesforceStruct(&sfAuth),
 				sObjectName: "Account",
 				records:     []account{{}},
 				batchSize:   200,
@@ -740,12 +769,18 @@ func Test_doDeleteComposite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := doDeleteComposite(tt.args.auth, tt.args.sObjectName, tt.args.records, tt.args.allOrNone, tt.args.batchSize)
+			got, err := doDeleteComposite(
+				tt.args.sf,
+				tt.args.sObjectName,
+				tt.args.records,
+				tt.args.allOrNone,
+				tt.args.batchSize,
+			)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("doDeleteComposite() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("doDeleteComposite() = %v, want %v", err, tt.want)
+				t.Errorf("doDeleteComposite() = %v, want %v", got, tt.want)
 			}
 		})
 	}

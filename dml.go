@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/go-viper/mapstructure/v2"
 )
@@ -20,7 +21,7 @@ func convertToMap(obj any) (map[string]any, error) {
 	if _, ok := obj.(map[string]any); ok {
 		recordMap = obj.(map[string]any)
 	} else {
-		err := mapstructure.Decode(obj, &recordMap)
+		err := mapstructureDecode(obj, &recordMap)
 		if err != nil {
 			return nil, errors.New("issue decoding salesforce object, need a key value pair (custom struct or map)")
 		}
@@ -33,7 +34,7 @@ func convertToSliceOfMaps(obj any) ([]map[string]any, error) {
 	if _, ok := obj.(map[string]any); ok {
 		recordMap = obj.([]map[string]any)
 	} else {
-		err := mapstructure.Decode(obj, &recordMap)
+		err := mapstructureDecode(obj, &recordMap)
 		if err != nil {
 			return nil, errors.New("issue decoding salesforce object, need a key value pair (custom struct or map)")
 		}
@@ -55,8 +56,14 @@ func processSalesforceResponse(resp http.Response) ([]SalesforceResult, error) {
 	return results, nil
 }
 
-func doBatchedRequestsForCollection(auth *authentication, method string, url string, batchSize int, recordMap []map[string]any) (SalesforceResults, error) {
-	var results = []SalesforceResult{}
+func doBatchedRequestsForCollection(
+	sf *Salesforce,
+	method string,
+	url string,
+	batchSize int,
+	recordMap []map[string]any,
+) (SalesforceResults, error) {
+	results := []SalesforceResult{}
 
 	for len(recordMap) > 0 {
 		var batch, remaining []map[string]any
@@ -77,11 +84,12 @@ func doBatchedRequestsForCollection(auth *authentication, method string, url str
 			return SalesforceResults{Results: results}, err
 		}
 
-		resp, err := doRequest(auth, requestPayload{
-			method:  method,
-			uri:     url,
-			content: jsonType,
-			body:    string(body),
+		resp, err := doRequest(sf.auth, sf.config, requestPayload{
+			method:   method,
+			uri:      url,
+			content:  jsonType,
+			body:     string(body),
+			compress: sf.config.compressionHeaders,
 		})
 		if err != nil {
 			return SalesforceResults{Results: results}, err
@@ -104,13 +112,75 @@ func doBatchedRequestsForCollection(auth *authentication, method string, url str
 }
 
 func decodeResponseBody(response *http.Response) (value SalesforceResult, err error) {
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			// If we don't already have an error, use the close error
+			if err == nil {
+				err = closeErr
+			}
+		}
+	}()
 	decoder := json.NewDecoder(response.Body)
 	err = decoder.Decode(&value)
 	return value, err
 }
 
-func doInsertOne(auth *authentication, sObjectName string, record any) (SalesforceResult, error) {
+func checkForExternalIdInList(
+	sObjectName string,
+	fieldName string,
+	recordMap []map[string]any,
+) error {
+	for i := range recordMap {
+		recordMap[i]["attributes"] = map[string]string{"type": sObjectName}
+		_, err := checkForExternalId(sObjectName, fieldName, recordMap[i])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkForExternalId(
+	sObjectName string,
+	fieldName string,
+	recordMap map[string]any,
+) (any, error) {
+	externalIdValue, ok := convertToString(recordMap[fieldName])
+	if !ok || externalIdValue == "" {
+		return nil, fmt.Errorf(
+			"salesforce externalId: %s not found in %s data. make sure to append custom fields with '__c'",
+			fieldName,
+			sObjectName,
+		)
+	}
+	return externalIdValue, nil
+}
+
+func convertToString(value any) (string, bool) {
+	switch typedValue := value.(type) {
+	case int:
+		if typedValue == 0 {
+			return "", false
+		}
+		return strconv.Itoa(typedValue), true
+	case int64:
+		if typedValue == 0 {
+			return "", false
+		}
+		return strconv.FormatInt(typedValue, 10), true
+	case float64:
+		if typedValue == 0 {
+			return "", false
+		}
+		return strconv.FormatFloat(typedValue, 'f', -1, 64), true
+	case string:
+		return typedValue, true
+	default:
+		return "", false
+	}
+}
+
+func doInsertOne(sf *Salesforce, sObjectName string, record any) (SalesforceResult, error) {
 	recordMap, err := convertToMap(record)
 	if err != nil {
 		return SalesforceResult{}, err
@@ -123,11 +193,12 @@ func doInsertOne(auth *authentication, sObjectName string, record any) (Salesfor
 		return SalesforceResult{}, err
 	}
 
-	resp, err := doRequest(auth, requestPayload{
-		method:  http.MethodPost,
-		uri:     "/sobjects/" + sObjectName,
-		content: jsonType,
-		body:    string(body),
+	resp, err := doRequest(sf.auth, sf.config, requestPayload{
+		method:   http.MethodPost,
+		uri:      "/sobjects/" + sObjectName,
+		content:  jsonType,
+		body:     string(body),
+		compress: sf.config.compressionHeaders,
 	})
 	if err != nil {
 		return SalesforceResult{}, err
@@ -142,7 +213,7 @@ func doInsertOne(auth *authentication, sObjectName string, record any) (Salesfor
 	return data, nil
 }
 
-func doUpdateOne(auth *authentication, sObjectName string, record any) error {
+func doUpdateOne(sf *Salesforce, sObjectName string, record any) error {
 	recordMap, err := convertToMap(record)
 	if err != nil {
 		return err
@@ -161,11 +232,12 @@ func doUpdateOne(auth *authentication, sObjectName string, record any) error {
 		return err
 	}
 
-	_, err = doRequest(auth, requestPayload{
-		method:  http.MethodPatch,
-		uri:     "/sobjects/" + sObjectName + "/" + recordId,
-		content: jsonType,
-		body:    string(body),
+	_, err = doRequest(sf.auth, sf.config, requestPayload{
+		method:   http.MethodPatch,
+		uri:      "/sobjects/" + sObjectName + "/" + recordId,
+		content:  jsonType,
+		body:     string(body),
+		compress: sf.config.compressionHeaders,
 	})
 	if err != nil {
 		return err
@@ -174,15 +246,19 @@ func doUpdateOne(auth *authentication, sObjectName string, record any) error {
 	return nil
 }
 
-func doUpsertOne(auth *authentication, sObjectName string, fieldName string, record any) (SalesforceResult, error) {
+func doUpsertOne(
+	sf *Salesforce,
+	sObjectName string,
+	fieldName string,
+	record any,
+) (SalesforceResult, error) {
 	recordMap, err := convertToMap(record)
 	if err != nil {
 		return SalesforceResult{}, err
 	}
-
-	externalIdValue, ok := recordMap[fieldName].(string)
-	if !ok || externalIdValue == "" {
-		return SalesforceResult{}, fmt.Errorf("salesforce externalId: %s not found in %s data. make sure to append custom fields with '__c'", fieldName, sObjectName)
+	externalIdValue, err := checkForExternalId(sObjectName, fieldName, recordMap)
+	if err != nil {
+		return SalesforceResult{}, err
 	}
 
 	recordMap["attributes"] = map[string]string{"type": sObjectName}
@@ -194,11 +270,24 @@ func doUpsertOne(auth *authentication, sObjectName string, fieldName string, rec
 		return SalesforceResult{}, err
 	}
 
-	resp, err := doRequest(auth, requestPayload{
-		method:  http.MethodPatch,
-		uri:     "/sobjects/" + sObjectName + "/" + fieldName + "/" + externalIdValue,
-		content: jsonType,
-		body:    string(body),
+	var uri string
+	switch typedExternalId := externalIdValue.(type) {
+	case int:
+		uri = "/sobjects/" + sObjectName + "/" + fieldName + "/" + strconv.Itoa(typedExternalId)
+	case float64:
+		uri = "/sobjects/" + sObjectName + "/" + fieldName + "/" + strconv.FormatFloat(typedExternalId, 'f', -1, 64)
+	case string:
+		uri = "/sobjects/" + sObjectName + "/" + fieldName + "/" + typedExternalId
+	default:
+		return SalesforceResult{}, errors.New("external id should be a string or number")
+	}
+
+	resp, err := doRequest(sf.auth, sf.config, requestPayload{
+		method:   http.MethodPatch,
+		uri:      uri,
+		content:  jsonType,
+		body:     string(body),
+		compress: sf.config.compressionHeaders,
 	})
 	if err != nil {
 		return SalesforceResult{}, err
@@ -213,7 +302,7 @@ func doUpsertOne(auth *authentication, sObjectName string, fieldName string, rec
 	return data, nil
 }
 
-func doDeleteOne(auth *authentication, sObjectName string, record any) error {
+func doDeleteOne(sf *Salesforce, sObjectName string, record any) error {
 	recordMap, err := convertToMap(record)
 	if err != nil {
 		return err
@@ -224,10 +313,11 @@ func doDeleteOne(auth *authentication, sObjectName string, record any) error {
 		return errors.New("salesforce id not found in object data")
 	}
 
-	_, err = doRequest(auth, requestPayload{
-		method:  http.MethodDelete,
-		uri:     "/sobjects/" + sObjectName + "/" + recordId,
-		content: jsonType,
+	_, err = doRequest(sf.auth, sf.config, requestPayload{
+		method:   http.MethodDelete,
+		uri:      "/sobjects/" + sObjectName + "/" + recordId,
+		content:  jsonType,
+		compress: sf.config.compressionHeaders,
 	})
 	if err != nil {
 		return err
@@ -236,7 +326,12 @@ func doDeleteOne(auth *authentication, sObjectName string, record any) error {
 	return nil
 }
 
-func doInsertCollection(auth *authentication, sObjectName string, records any, batchSize int) (SalesforceResults, error) {
+func doInsertCollection(
+	sf *Salesforce,
+	sObjectName string,
+	records any,
+	batchSize int,
+) (SalesforceResults, error) {
 	recordMap, err := convertToSliceOfMaps(records)
 	if err != nil {
 		return SalesforceResults{}, err
@@ -246,10 +341,21 @@ func doInsertCollection(auth *authentication, sObjectName string, records any, b
 		recordMap[i]["attributes"] = map[string]string{"type": sObjectName}
 	}
 
-	return doBatchedRequestsForCollection(auth, http.MethodPost, "/composite/sobjects/", batchSize, recordMap)
+	return doBatchedRequestsForCollection(
+		sf,
+		http.MethodPost,
+		"/composite/sobjects/",
+		batchSize,
+		recordMap,
+	)
 }
 
-func doUpdateCollection(auth *authentication, sObjectName string, records any, batchSize int) (SalesforceResults, error) {
+func doUpdateCollection(
+	sf *Salesforce,
+	sObjectName string,
+	records any,
+	batchSize int,
+) (SalesforceResults, error) {
 	recordMap, err := convertToSliceOfMaps(records)
 	if err != nil {
 		return SalesforceResults{}, err
@@ -262,28 +368,40 @@ func doUpdateCollection(auth *authentication, sObjectName string, records any, b
 		}
 	}
 
-	return doBatchedRequestsForCollection(auth, http.MethodPatch, "/composite/sobjects/", batchSize, recordMap)
+	return doBatchedRequestsForCollection(
+		sf,
+		http.MethodPatch,
+		"/composite/sobjects/",
+		batchSize,
+		recordMap,
+	)
 }
 
-func doUpsertCollection(auth *authentication, sObjectName string, fieldName string, records any, batchSize int) (SalesforceResults, error) {
+func doUpsertCollection(
+	sf *Salesforce,
+	sObjectName string,
+	fieldName string,
+	records any,
+	batchSize int,
+) (SalesforceResults, error) {
 	recordMap, err := convertToSliceOfMaps(records)
 	if err != nil {
 		return SalesforceResults{}, err
 	}
-	for i := range recordMap {
-		recordMap[i]["attributes"] = map[string]string{"type": sObjectName}
-		externalIdValue, ok := recordMap[i][fieldName].(string)
-		if !ok || externalIdValue == "" {
-			return SalesforceResults{}, fmt.Errorf("salesforce externalId: %s not found in %s data. make sure to append custom fields with '__c'", fieldName, sObjectName)
-		}
+	err = checkForExternalIdInList(sObjectName, fieldName, recordMap)
+	if err != nil {
+		return SalesforceResults{}, err
 	}
-
 	uri := "/composite/sobjects/" + sObjectName + "/" + fieldName
-	return doBatchedRequestsForCollection(auth, http.MethodPatch, uri, batchSize, recordMap)
-
+	return doBatchedRequestsForCollection(sf, http.MethodPatch, uri, batchSize, recordMap)
 }
 
-func doDeleteCollection(auth *authentication, sObjectName string, records any, batchSize int) (SalesforceResults, error) {
+func doDeleteCollection(
+	sf *Salesforce,
+	sObjectName string,
+	records any,
+	batchSize int,
+) (SalesforceResults, error) {
 	recordMap, err := convertToSliceOfMaps(records)
 	if err != nil {
 		return SalesforceResults{}, err
@@ -316,13 +434,14 @@ func doDeleteCollection(auth *authentication, sObjectName string, records any, b
 		batchedIds = append(batchedIds, ids)
 	}
 
-	var results = []SalesforceResult{}
+	results := []SalesforceResult{}
 
 	for i := range batchedIds {
-		resp, err := doRequest(auth, requestPayload{
-			method:  http.MethodDelete,
-			uri:     "/composite/sobjects/?ids=" + batchedIds[i] + "&allOrNone=false",
-			content: jsonType,
+		resp, err := doRequest(sf.auth, sf.config, requestPayload{
+			method:   http.MethodDelete,
+			uri:      "/composite/sobjects/?ids=" + batchedIds[i] + "&allOrNone=false",
+			content:  jsonType,
+			compress: sf.config.compressionHeaders,
 		})
 		if err != nil {
 			return SalesforceResults{Results: results}, err
@@ -342,4 +461,21 @@ func doDeleteCollection(auth *authentication, sObjectName string, records any, b
 	}
 
 	return SalesforceResults{Results: results}, nil
+}
+
+func mapstructureDecode(input any, output any) error {
+	config := &mapstructure.DecoderConfig{
+		Metadata: nil,
+		Result:   output,
+		// mapstructure is included here to maintain strict backwards compatibility, even though there was no
+		// documentation that this tag was supported. It should be removed in the next major version.
+		TagName: "salesforce,mapstructure",
+	}
+
+	decoder, err := mapstructure.NewDecoder(config)
+	if err != nil {
+		return err
+	}
+
+	return decoder.Decode(input)
 }

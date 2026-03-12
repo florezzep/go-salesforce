@@ -24,16 +24,18 @@ type bulkJobQueryIterator struct {
 	uri             string
 	err             error
 	reader          io.ReadCloser
+	config          *configuration
 }
 
-func newBulkJobQueryIterator(auth *authentication, bulkJobId string) (*bulkJobQueryIterator, error) {
-	pollErr := waitForJobResults(auth, bulkJobId, queryJobType, (time.Second / 2), time.Minute)
+func newBulkJobQueryIterator(sf *Salesforce, bulkJobId string) (*bulkJobQueryIterator, error) {
+	pollErr := waitForJobResults(sf, bulkJobId, queryJobType, (time.Second / 2))
 	if pollErr != nil {
 		return nil, pollErr
 	}
 	return &bulkJobQueryIterator{
-		auth: auth,
-		uri:  "/jobs/query/" + bulkJobId + "/results",
+		auth:   sf.auth,
+		uri:    "/jobs/query/" + bulkJobId + "/results",
+		config: sf.config,
 	}, nil
 }
 
@@ -48,7 +50,16 @@ func (it *bulkJobQueryIterator) Next() bool {
 	if it.Locator != "" {
 		uri += "/?locator=" + it.Locator
 	}
-	resp, err := doRequest(it.auth, requestPayload{method: http.MethodGet, uri: uri, content: jsonType})
+	resp, err := doRequest(
+		it.auth,
+		it.config,
+		requestPayload{
+			method:   http.MethodGet,
+			uri:      uri,
+			content:  jsonType,
+			compress: it.config.compressionHeaders,
+		},
+	)
 	if err != nil {
 		it.err = err
 		return false
@@ -58,6 +69,8 @@ func (it *bulkJobQueryIterator) Next() bool {
 	it.NumberOfRecords, _ = strconv.Atoi(resp.Header["Sforce-Numberofrecords"][0])
 	if resp.Header["Sforce-Locator"][0] != "null" {
 		it.Locator = resp.Header["Sforce-Locator"][0]
+	} else {
+		it.Locator = ""
 	}
 
 	return true
