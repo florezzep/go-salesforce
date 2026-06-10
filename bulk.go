@@ -10,10 +10,28 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/afero"
 )
+
+// addParametersToBulkQueryURI appends the locator and maxRecords query
+// parameters to a bulk-query results URI. maxRecords <= 0 leaves the page size
+// to the Salesforce server default.
+func addParametersToBulkQueryURI(uri string, locator string, maxRecords int) string {
+	if locator != "" {
+		uri = uri + "/?locator=" + locator
+	}
+	if maxRecords > 0 {
+		if strings.Contains(uri, "?") {
+			uri = uri + "&maxRecords=" + strconv.Itoa(maxRecords)
+		} else {
+			uri = uri + "/?maxRecords=" + strconv.Itoa(maxRecords)
+		}
+	}
+	return uri
+}
 
 type bulkJobCreationRequest struct {
 	Object              string `json:"object"`

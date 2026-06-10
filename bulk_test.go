@@ -1647,3 +1647,57 @@ func Test_csvToMap(t *testing.T) {
 		})
 	}
 }
+
+func Test_addParametersToBulkQueryURI(t *testing.T) {
+	type args struct {
+		uri        string
+		locator    string
+		maxRecords int
+	}
+	tests := []struct {
+		name string
+		args args
+		want string
+	}{
+		{
+			name: "no_locator_no_max",
+			args: args{uri: "/jobs/query/123/results", locator: "", maxRecords: -1},
+			want: "/jobs/query/123/results",
+		},
+		{
+			name: "max_only",
+			args: args{uri: "/jobs/query/123/results", locator: "", maxRecords: 1000},
+			want: "/jobs/query/123/results/?maxRecords=1000",
+		},
+		{
+			name: "locator_only",
+			args: args{uri: "/jobs/query/123/results", locator: "abc", maxRecords: 0},
+			want: "/jobs/query/123/results/?locator=abc",
+		},
+		{
+			name: "locator_and_max",
+			args: args{uri: "/jobs/query/123/results", locator: "abc", maxRecords: 1000},
+			want: "/jobs/query/123/results/?locator=abc&maxRecords=1000",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := addParametersToBulkQueryURI(tt.args.uri, tt.args.locator, tt.args.maxRecords); got != tt.want {
+				t.Errorf("addParametersToBulkQueryURI() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_WithBulkQueryMaxRecords(t *testing.T) {
+	c := &configuration{}
+	if err := WithBulkQueryMaxRecords(500)(c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.bulkQueryMaxRecords != 500 {
+		t.Errorf("bulkQueryMaxRecords = %d, want 500", c.bulkQueryMaxRecords)
+	}
+	if err := WithBulkQueryMaxRecords(0)(c); err == nil {
+		t.Error("expected error for maxRecords < 1, got nil")
+	}
+}

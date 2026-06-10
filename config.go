@@ -19,6 +19,7 @@ type configuration struct {
 	roundTripper                 http.RoundTripper // Custom round tripper
 	shouldValidateAuthentication bool              // Validate session on client creation
 	httpTimeout                  time.Duration     // HTTP client timeout
+	bulkQueryMaxRecords          int               // query parameter capping records per bulk-query result page
 }
 
 func (c *configuration) setDefaults() {
@@ -29,6 +30,7 @@ func (c *configuration) setDefaults() {
 	c.bulkBatchSizeMax = bulkBatchSizeMax
 	c.bulkPollTimeout = bulkPollTimeout
 	c.httpTimeout = httpDefaultTimeout
+	c.bulkQueryMaxRecords = bulkQueryMaxRecords
 }
 
 func (c *configuration) configureHttpClient() {
@@ -139,6 +141,20 @@ func WithHTTPTimeout(timeout time.Duration) Option {
 			return errors.New("HTTP timeout must be greater than 0")
 		}
 		c.httpTimeout = timeout
+		return nil
+	}
+}
+
+// WithBulkQueryMaxRecords caps the number of records Salesforce returns per
+// bulk-query result page (the maxRecords query parameter). Bounding this keeps
+// the streaming iterator's per-page memory in check on large result sets; the
+// default (-1) leaves it to the server.
+func WithBulkQueryMaxRecords(maxRecords int) Option {
+	return func(c *configuration) error {
+		if maxRecords < 1 {
+			return errors.New("bulk query max records must be greater than 0")
+		}
+		c.bulkQueryMaxRecords = maxRecords
 		return nil
 	}
 }
