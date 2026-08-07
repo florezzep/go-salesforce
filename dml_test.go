@@ -448,6 +448,62 @@ func Test_doUpdateOne(t *testing.T) {
 	}
 }
 
+func Test_doUpdateOne_withHeader(t *testing.T) {
+	type account struct {
+		Id   string
+		Name string
+	}
+
+	server, sfAuth, capturedRequest := setupTestServerWithCapture("", http.StatusNoContent)
+	defer server.Close()
+
+	err := doUpdateOne(
+		buildSalesforceStruct(&sfAuth),
+		"Account",
+		account{Id: "1234", Name: "test account"},
+		WithHeader("Sforce-Auto-Assign", "FALSE"),
+	)
+	if err != nil {
+		t.Fatalf("doUpdateOne() unexpected error: %v", err)
+	}
+	if *capturedRequest == nil {
+		t.Fatal("No request was captured for header validation")
+	}
+	got := (*capturedRequest).Header.Get("Sforce-Auto-Assign")
+	if got != "FALSE" {
+		t.Errorf("Sforce-Auto-Assign header = %q, want %q", got, "FALSE")
+	}
+}
+
+func Test_doInsertOne_withHeader(t *testing.T) {
+	type account struct {
+		Name string
+	}
+
+	server, sfAuth, capturedRequest := setupTestServerWithCapture(
+		SalesforceResult{Id: "1234", Success: true},
+		http.StatusCreated,
+	)
+	defer server.Close()
+
+	_, err := doInsertOne(
+		buildSalesforceStruct(&sfAuth),
+		"Account",
+		account{Name: "test account"},
+		WithHeader("Sforce-Auto-Assign", "FALSE"),
+	)
+	if err != nil {
+		t.Fatalf("doInsertOne() unexpected error: %v", err)
+	}
+	if *capturedRequest == nil {
+		t.Fatal("No request was captured for header validation")
+	}
+	got := (*capturedRequest).Header.Get("Sforce-Auto-Assign")
+	if got != "FALSE" {
+		t.Errorf("Sforce-Auto-Assign header = %q, want %q", got, "FALSE")
+	}
+}
+
 func Test_doUpsertOne(t *testing.T) {
 	type account struct {
 		ExternalId__c string

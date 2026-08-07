@@ -180,7 +180,12 @@ func convertToString(value any) (string, bool) {
 	}
 }
 
-func doInsertOne(sf *Salesforce, sObjectName string, record any) (SalesforceResult, error) {
+func doInsertOne(
+	sf *Salesforce,
+	sObjectName string,
+	record any,
+	opts ...RequestOption,
+) (SalesforceResult, error) {
 	recordMap, err := convertToMap(record)
 	if err != nil {
 		return SalesforceResult{}, err
@@ -199,6 +204,7 @@ func doInsertOne(sf *Salesforce, sObjectName string, record any) (SalesforceResu
 		content:  jsonType,
 		body:     string(body),
 		compress: sf.config.compressionHeaders,
+		options:  opts,
 	})
 	if err != nil {
 		return SalesforceResult{}, err
@@ -213,7 +219,7 @@ func doInsertOne(sf *Salesforce, sObjectName string, record any) (SalesforceResu
 	return data, nil
 }
 
-func doUpdateOne(sf *Salesforce, sObjectName string, record any) error {
+func doUpdateOne(sf *Salesforce, sObjectName string, record any, opts ...RequestOption) error {
 	recordMap, err := convertToMap(record)
 	if err != nil {
 		return err
@@ -238,6 +244,7 @@ func doUpdateOne(sf *Salesforce, sObjectName string, record any) error {
 		content:  jsonType,
 		body:     string(body),
 		compress: sf.config.compressionHeaders,
+		options:  opts,
 	})
 	if err != nil {
 		return err
@@ -251,6 +258,7 @@ func doUpsertOne(
 	sObjectName string,
 	fieldName string,
 	record any,
+	opts ...RequestOption,
 ) (SalesforceResult, error) {
 	recordMap, err := convertToMap(record)
 	if err != nil {
@@ -288,6 +296,7 @@ func doUpsertOne(
 		content:  jsonType,
 		body:     string(body),
 		compress: sf.config.compressionHeaders,
+		options:  opts,
 	})
 	if err != nil {
 		return SalesforceResult{}, err
@@ -302,7 +311,7 @@ func doUpsertOne(
 	return data, nil
 }
 
-func doDeleteOne(sf *Salesforce, sObjectName string, record any) error {
+func doDeleteOne(sf *Salesforce, sObjectName string, record any, opts ...RequestOption) error {
 	recordMap, err := convertToMap(record)
 	if err != nil {
 		return err
@@ -318,6 +327,7 @@ func doDeleteOne(sf *Salesforce, sObjectName string, record any) error {
 		uri:      "/sobjects/" + sObjectName + "/" + recordId,
 		content:  jsonType,
 		compress: sf.config.compressionHeaders,
+		options:  opts,
 	})
 	if err != nil {
 		return err
