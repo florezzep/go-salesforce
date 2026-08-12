@@ -332,12 +332,13 @@ Insert, Update, Upsert, or Delete one record at a time
 
 ### InsertOne
 
-`func (sf *Salesforce) InsertOne(sObjectName string, record any) (SalesforceResult, error)`
+`func (sf *Salesforce) InsertOne(sObjectName string, record any, opts ...RequestOption) (SalesforceResult, error)`
 
 InsertOne inserts one salesforce record of the given type
 
 - `sObjectName`: API name of Salesforce object
 - `record`: a Salesforce object record
+- `opts`: optional request options (currently supports custom headers via `WithHeader`)
 
 ```go
 type Contact struct {
@@ -354,13 +355,14 @@ result, err := sf.InsertOne("Contact", contact)
 
 ### UpdateOne
 
-`func (sf *Salesforce) UpdateOne(sObjectName string, record any) error`
+`func (sf *Salesforce) UpdateOne(sObjectName string, record any, opts ...RequestOption) error`
 
 Updates one salesforce record of the given type
 
 - `sObjectName`: API name of Salesforce object
 - `record`: a Salesforce object record
   - An Id is required
+- `opts`: optional request options (currently supports custom headers via `WithHeader`)
 
 ```go
 type Contact struct {
@@ -377,9 +379,17 @@ contact := Contact{
 err := sf.UpdateOne("Contact", contact)
 ```
 
+Salesforce REST defaults `Sforce-Auto-Assign` to `TRUE` when the header is omitted, which can re-run assignment rules on Case/Lead updates. Pass the header to suppress that:
+
+```go
+err := sf.UpdateOne("Case", caseRecord,
+    salesforce.WithHeader("Sforce-Auto-Assign", "FALSE"),
+)
+```
+
 ### UpsertOne
 
-`func (sf *Salesforce) UpsertOne(sObjectName string, externalIdFieldName string, record any) (SalesforceResult, error)`
+`func (sf *Salesforce) UpsertOne(sObjectName string, externalIdFieldName string, record any, opts ...RequestOption) (SalesforceResult, error)`
 
 Updates (or inserts) one salesforce record using the given external Id
 
@@ -387,6 +397,7 @@ Updates (or inserts) one salesforce record using the given external Id
 - `externalIdFieldName`: field API name for an external Id that exists on the given object
 - `record`: a Salesforce object record
   - A value for the External Id is required
+- `opts`: optional request options (currently supports custom headers via `WithHeader`)
 
 ```go
 type Contact struct {
@@ -405,13 +416,14 @@ result, err := sf.UpsertOne("Contact", "ContactExternalId__c", contact)
 
 ### DeleteOne
 
-`func (sf *Salesforce) DeleteOne(sObjectName string, record any) error`
+`func (sf *Salesforce) DeleteOne(sObjectName string, record any, opts ...RequestOption) error`
 
 Deletes a Salesforce record
 
 - `sObjectName`: API name of Salesforce object
 - `record`: a Salesforce object record
   - Should only contain an Id
+- `opts`: optional request options (currently supports custom headers via `WithHeader`)
 
 ```go
 type Contact struct {

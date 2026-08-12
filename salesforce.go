@@ -324,44 +324,49 @@ func (sf *Salesforce) QueryStruct(soqlStruct any, sObject any) error {
 	return nil
 }
 
-func (sf *Salesforce) InsertOne(sObjectName string, record any) (SalesforceResult, error) {
-	validationErr := validateSingles(*sf, record)
-	if validationErr != nil {
-		return SalesforceResult{}, validationErr
-	}
-
-	return doInsertOne(sf, sObjectName, record)
-}
-
-func (sf *Salesforce) UpdateOne(sObjectName string, record any) error {
-	validationErr := validateSingles(*sf, record)
-	if validationErr != nil {
-		return validationErr
-	}
-
-	return doUpdateOne(sf, sObjectName, record)
-}
-
-func (sf *Salesforce) UpsertOne(
+func (sf *Salesforce) InsertOne(
 	sObjectName string,
-	externalIdFieldName string,
 	record any,
+	opts ...RequestOption,
 ) (SalesforceResult, error) {
 	validationErr := validateSingles(*sf, record)
 	if validationErr != nil {
 		return SalesforceResult{}, validationErr
 	}
 
-	return doUpsertOne(sf, sObjectName, externalIdFieldName, record)
+	return doInsertOne(sf, sObjectName, record, opts...)
 }
 
-func (sf *Salesforce) DeleteOne(sObjectName string, record any) error {
+func (sf *Salesforce) UpdateOne(sObjectName string, record any, opts ...RequestOption) error {
 	validationErr := validateSingles(*sf, record)
 	if validationErr != nil {
 		return validationErr
 	}
 
-	return doDeleteOne(sf, sObjectName, record)
+	return doUpdateOne(sf, sObjectName, record, opts...)
+}
+
+func (sf *Salesforce) UpsertOne(
+	sObjectName string,
+	externalIdFieldName string,
+	record any,
+	opts ...RequestOption,
+) (SalesforceResult, error) {
+	validationErr := validateSingles(*sf, record)
+	if validationErr != nil {
+		return SalesforceResult{}, validationErr
+	}
+
+	return doUpsertOne(sf, sObjectName, externalIdFieldName, record, opts...)
+}
+
+func (sf *Salesforce) DeleteOne(sObjectName string, record any, opts ...RequestOption) error {
+	validationErr := validateSingles(*sf, record)
+	if validationErr != nil {
+		return validationErr
+	}
+
+	return doDeleteOne(sf, sObjectName, record, opts...)
 }
 
 func (sf *Salesforce) InsertCollection(
