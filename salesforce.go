@@ -26,6 +26,16 @@ type SalesforceErrorMessage struct {
 	ErrorCode  string   `json:"errorCode"`
 }
 
+// ResponseError preserves the status and body of a Salesforce HTTP error response.
+type ResponseError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *ResponseError) Error() string {
+	return e.Body
+}
+
 type SalesforceResult struct {
 	Id      string                   `json:"id"`
 	Errors  []SalesforceErrorMessage `json:"errors"`

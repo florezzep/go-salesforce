@@ -286,6 +286,22 @@ contacts := []Contact{}
 err := sf.QueryStruct(soqlStruct, &contacts)
 ```
 
+### HTTP response errors
+
+Salesforce HTTP error responses return a `*salesforce.ResponseError` with the
+original `StatusCode` and `Body`. Its `Error()` text is the response body, so
+existing error-message checks still work. Use `errors.As` to inspect the status:
+
+```go
+var responseErr *salesforce.ResponseError
+if errors.As(err, &responseErr) {
+    fmt.Printf("Salesforce returned HTTP %d\n", responseErr.StatusCode)
+}
+```
+
+Network, authentication-refresh, and response-decoding errors retain their
+existing behavior and are not converted into `ResponseError`.
+
 ### Handling Relationship Queries
 
 When querying Salesforce objects, it's common to access fields that are related through parent-child or lookup relationships. For instance, querying `Account.Name` with related `Contact` might look like this:
