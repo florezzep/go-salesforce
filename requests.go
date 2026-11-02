@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -141,7 +140,7 @@ func processSalesforceError(
 		if singleErr := json.Unmarshal(responseData, &singleError); singleErr == nil {
 			sfErrors = []SalesforceErrorMessage{singleError}
 		} else {
-			return &resp, errors.New(string(responseData))
+			return &resp, &ResponseError{StatusCode: resp.StatusCode, Body: string(responseData)}
 		}
 	}
 	for _, sfError := range sfErrors {
@@ -173,5 +172,5 @@ func processSalesforceError(
 		}
 	}
 
-	return &resp, errors.New(string(responseData))
+	return &resp, &ResponseError{StatusCode: resp.StatusCode, Body: string(responseData)}
 }
